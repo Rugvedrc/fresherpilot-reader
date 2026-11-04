@@ -112,7 +112,9 @@ def li_detail(card: dict, within_min: int) -> dict:
     except ValueError:
         posted_dt = None
     return {"id": card["id"], "source": "LinkedIn", "title": card["title"], "company": card["company"],
-            "location": card["location"], "experience": d["level"] or "Not specified", "posted": card["posted"],
+            "location": (card["location"] if "remote" in card["location"].lower() or not card.get("remote")
+                         else f"Remote, {card['location']}" if card["location"] else "Remote"),
+            "experience": d["level"] or "Not specified", "posted": card["posted"],
             "posted_days": days_ago(posted_dt), "url": f"https://www.linkedin.com/jobs/view/{card['id']}/",
             "description": d["description"], "work_type": d["type"], "posted_within_min": within_min}
 
@@ -134,6 +136,7 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
             found = li_cards(r.text) if r is not None else []
             fresh = [c for c in found if f"LinkedIn:{c['id']}" not in known and c["id"] not in new_cards]
             for c in fresh:
+                c["remote"] = place == "Remote"  # LinkedIn keeps the office city in the location: mark it
                 new_cards[c["id"]] = c
             if len(found) < 10 or not fresh:
                 break  # last page, or only known jobs: the rest is older
