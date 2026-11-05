@@ -114,7 +114,10 @@ def li_detail(card: dict, within_min: int) -> dict:
             if h and v:
                 crit[h.get_text(strip=True).lower()] = v.get_text(strip=True)
         d = {"description": desc.get_text("\n", strip=True) if desc else "",
-             "level": crit.get("seniority level", ""), "type": crit.get("employment type", "")}
+             "level": crit.get("seniority level", ""), "type": crit.get("employment type", ""),
+             # Apply button: onsite = Easy Apply on LinkedIn (mobile app), offsite = the company's site
+             "apply": "site" if "apply-link-offsite" in r.text else "easy" if "apply-link-onsite" in r.text
+                      or "apply-link-simple_onsite" in r.text else ""}
     try:
         posted_dt = datetime.fromisoformat(card["posted"]).replace(tzinfo=timezone.utc) if card["posted"] else None
     except ValueError:
@@ -124,7 +127,8 @@ def li_detail(card: dict, within_min: int) -> dict:
                          else f"Remote, {card['location']}" if card["location"] else "Remote"),
             "experience": d["level"] or "Not specified", "posted": card["posted"],
             "posted_days": days_ago(posted_dt), "url": f"https://www.linkedin.com/jobs/view/{card['id']}/",
-            "description": d["description"], "work_type": d["type"], "posted_within_min": within_min}
+            "description": d["description"], "work_type": d["type"], "posted_within_min": within_min,
+            "apply_mode": d.get("apply", "")}
 
 
 def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
@@ -213,6 +217,8 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
                              "posted": pdt.date().isoformat() if pdt else "", "posted_days": days_ago(pdt),
                              "url": text(row.get("job_url")), "description": re.sub(r"<[^>]+>", " ", text(row.get("description"))),
                              "work_type": text(row.get("job_type")),
+                             # a company link = apply on the company's site; none = Indeed Apply (mobile app)
+                             "apply_mode": "site" if text(row.get("job_url_direct")).strip() else "easy",
                              "posted_within_min": round(hours * 60) if hours <= 6 else None}
             time.sleep(1.0)
     items = list(jobs.values())
