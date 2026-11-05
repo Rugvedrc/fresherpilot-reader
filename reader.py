@@ -129,7 +129,10 @@ def li_detail(card: dict, within_min: int) -> dict:
 
 def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     """All searches over the window. Returns (jobs, complete)."""
-    window, _ = window_for((cfg["read"] or {}).get(li_key()), cfg["laptop_seen"], cfg["posted_within_days"])
+    read = cfg["read"] or {}
+    # a new machine split starts where the last LinkedIn read (any split) ended, not 3 days back
+    last = read.get(li_key()) or max([v for k, v in read.items() if k.startswith("linkedin")] or [0]) or None
+    window, _ = window_for(last, cfg["laptop_seen"], cfg["posted_within_days"])
     pages = 1 if window <= 3600 else min(40, 2 + window // 3600)  # longer gap: read deeper
     new_cards: dict[str, dict] = {}
     searches = cfg["li_searches"]
