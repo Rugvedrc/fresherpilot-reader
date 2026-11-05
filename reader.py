@@ -234,14 +234,19 @@ def main() -> int:
     indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
     rounds = 0
+    known: set[str] = set()
+    as_of = 0  # cloud time of the last known-ID list: after the first full list, only newer IDs are sent
     while time.time() < DEADLINE:
         began = time.time()
-        cfg = cloud("/api/reader" + force)  # fresh each round: settings, what's known, how far each board was read
+        sep = "&" if force else "?"
+        cfg = cloud("/api/reader" + force + (f"{sep}since={as_of}" if as_of else ""))  # settings, new known IDs, read times
         if not cfg["quiet"]:
             print("An always-on laptop app is reading the job sites: waiting.")
+            known, as_of = set(), 0
             time.sleep(300)
             continue
-        known = set(cfg["known"])
+        known |= set(cfg["known"])
+        as_of = cfg.get("as_of") or 0
         line = f"round {rounds + 1} [{SHARD}]:"
         if do_li:
             read: dict[str, float] = {}
