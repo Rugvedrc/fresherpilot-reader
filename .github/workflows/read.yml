@@ -16,6 +16,10 @@ jobs:
   read:
     runs-on: ubuntu-latest
     timeout-minutes: 350   # the reader loops ~340 min; GitHub allows 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [li0, li1, indeed]   # 3 machines at once: half the LinkedIn searches each, and Indeed
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,8 +33,10 @@ jobs:
           FP_CLOUD_URL: ${{ secrets.FP_CLOUD_URL }}
           FP_CLOUD_SECRET: ${{ secrets.FP_CLOUD_SECRET }}
           FP_FORCE: ${{ github.event.inputs.force || '0' }}
+          FP_SHARD: ${{ matrix.shard }}
       # GitHub turns off schedules in repos with no commits for 60 days: one tiny commit a month keeps it on.
       - name: keep-alive
+        if: matrix.shard == 'li0'
         run: |
           last=$(git log -1 --format=%ct)
           if [ $(( $(date +%s) - last )) -gt $(( 30 * 86400 )) ]; then

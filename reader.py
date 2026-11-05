@@ -37,6 +37,9 @@ INDEED_EVERY = 10 * 60
 MIN_ROUND = 60        # seconds: a round faster than this waits (be polite)
 START = time.time()
 DEADLINE = START + RUN_TOTAL
+# The workflow runs 3 machines at once (separate IPs, so LinkedIn's per-IP limit isn't shared): "li0" and "li1"
+# read half of the LinkedIn searches each (a round ~1 min), "indeed" loops Indeed. "all" = everything (one machine).
+SHARD = os.getenv("FP_SHARD", "all")
 
 
 def cloud(path: str, body: dict | None = None) -> dict:
@@ -126,10 +129,13 @@ def li_detail(card: dict, within_min: int) -> dict:
 
 def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     """All searches over the window. Returns (jobs, complete)."""
-    window, _ = window_for((cfg["read"] or {}).get("linkedin"), cfg["laptop_seen"], cfg["posted_within_days"])
+    window, _ = window_for((cfg["read"] or {}).get(li_key()), cfg["laptop_seen"], cfg["posted_within_days"])
     pages = 1 if window <= 3600 else min(40, 2 + window // 3600)  # longer gap: read deeper
     new_cards: dict[str, dict] = {}
-    for title, place in cfg["li_searches"]:
+    searches = cfg["li_searches"]
+    if SHARD in ("li0", "li1"):
+        searches = searches[int(SHARD[-1])::2]
+    for title, place in searches:
         if time.time() > DEADLINE:
             return finish_li(new_cards, window), False
         params = {"keywords": title, "location": "India" if place == "Remote" else place, "f_TPR": f"r{window}",
@@ -146,6 +152,10 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
             if len(found) < 10 or not fresh:
                 break  # last page, or only known jobs: the rest is older
     return finish_li(new_cards, window), True
+
+
+def li_key() -> str:
+    return "linkedin" if SHARD == "all" else f"linkedin_{SHARD}"
 
 
 def finish_li(cards: dict[str, dict], window: int) -> list[dict]:
@@ -211,6 +221,8 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
 
 def main() -> int:
     force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
+    do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed")
+    indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
     rounds = 0
     while time.time() < DEADLINE:
@@ -221,22 +233,24 @@ def main() -> int:
             time.sleep(300)
             continue
         known = set(cfg["known"])
-        read: dict[str, float] = {}
-        try:
-            li, done = read_linkedin(cfg, known)
-            if done:
-                read["linkedin"] = began
-        except Blocked as exc:
-            li = []
-            print(exc)
-            time.sleep(120)
-        res = cloud("/api/ingest", {"jobs": li, "read": read})
-        line = f"round {rounds + 1}: LinkedIn sent {len(li)} (new {res['added']})"
-        if began - last_indeed >= INDEED_EVERY:
+        line = f"round {rounds + 1} [{SHARD}]:"
+        if do_li:
+            read: dict[str, float] = {}
+            try:
+                li, done = read_linkedin(cfg, known)
+                if done:
+                    read[li_key()] = began
+            except Blocked as exc:
+                li = []
+                print(exc)
+                time.sleep(120)
+            res = cloud("/api/ingest", {"jobs": li, "read": read})
+            line += f" LinkedIn sent {len(li)} (new {res['added']})"
+        if do_indeed and began - last_indeed >= indeed_every:
             last_indeed = began
             ind, done = read_indeed(cfg, known)
             res = cloud("/api/ingest", {"jobs": ind, "read": {"indeed": began} if done else {}})
-            line += f", Indeed sent {len(ind)} (new {res['added']})"
+            line += f" Indeed sent {len(ind)} (new {res['added']})"
         rounds += 1
         print(f"{datetime.now(timezone.utc):%H:%M:%S} {line}, {time.time() - began:.0f}s", flush=True)
         time.sleep(max(0.0, MIN_ROUND - (time.time() - began)))
