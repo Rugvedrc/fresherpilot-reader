@@ -42,11 +42,34 @@ DEADLINE = START + RUN_TOTAL
 SHARD = os.getenv("FP_SHARD", "all")
 
 
+class CloudDown(Exception):
+    pass
+
+
+CLOUD_PATIENCE = 30 * 60  # s: the cloud down longer than this (e.g. D1's daily limit) = end the run cleanly
+
+
 def cloud(path: str, body: dict | None = None) -> dict:
-    r = (requests.post(CLOUD + path, json=body, headers=HEAD, timeout=60) if body is not None
-         else requests.get(CLOUD + path, headers=HEAD, timeout=60))
-    r.raise_for_status()
-    return r.json()
+    """Call the Worker. Errors (Worker / D1 down) are retried with growing pauses instead of failing the run;
+    after CLOUD_PATIENCE it raises CloudDown and main() ends the run without an error (no failure emails)."""
+    began, wait = time.time(), 30
+    while True:
+        try:
+            r = (requests.post(CLOUD + path, json=body, headers=HEAD, timeout=60) if body is not None
+                 else requests.get(CLOUD + path, headers=HEAD, timeout=60))
+            if r.status_code < 500 and r.status_code != 429:
+                r.raise_for_status()  # 4xx (bad secret...) = a real error
+                return r.json()
+            err = f"HTTP {r.status_code}"
+        except requests.RequestException as exc:
+            if getattr(exc, "response", None) is not None and exc.response.status_code < 500:
+                raise
+            err = str(exc)[:120]
+        if time.time() - began > CLOUD_PATIENCE or time.time() + wait > DEADLINE:
+            raise CloudDown(f"cloud unreachable for {int(time.time() - began)} s ({err})")
+        print(f"cloud {path.split('?')[0]}: {err}; retrying in {wait} s", flush=True)
+        time.sleep(wait)
+        wait = min(wait * 2, 300)
 
 
 def days_ago(dt: datetime | None) -> int | None:
@@ -239,7 +262,12 @@ def main() -> int:
     while time.time() < DEADLINE:
         began = time.time()
         sep = "&" if force else "?"
-        cfg = cloud("/api/reader" + force + (f"{sep}since={as_of}" if as_of else ""))  # settings, new known IDs, read times
+        boards = ",".join(b for b, on in (("LinkedIn", do_li), ("Indeed", do_indeed)) if on)
+        try:  # settings, the known IDs of this machine's boards (after the first round: only new ones), read times
+            cfg = cloud("/api/reader" + force + f"{sep}boards={boards}" + (f"&since={as_of}" if as_of else ""))
+        except CloudDown as exc:
+            print(f"{exc}: ending this run (the next one starts when the cloud is back)")
+            return 0
         if not cfg["quiet"]:
             print("An always-on laptop app is reading the job sites: waiting.")
             known, as_of = set(), 0
@@ -258,12 +286,20 @@ def main() -> int:
                 li = []
                 print(exc)
                 time.sleep(120)
-            res = cloud("/api/ingest", {"jobs": li, "read": read})
+            try:
+                res = cloud("/api/ingest", {"jobs": li, "read": read})
+            except CloudDown as exc:
+                print(f"{exc}: ending this run")
+                return 0
             line += f" LinkedIn sent {len(li)} (new {res['added']})"
         if do_indeed and began - last_indeed >= indeed_every:
             last_indeed = began
             ind, done = read_indeed(cfg, known)
-            res = cloud("/api/ingest", {"jobs": ind, "read": {"indeed": began} if done else {}})
+            try:
+                res = cloud("/api/ingest", {"jobs": ind, "read": {"indeed": began} if done else {}})
+            except CloudDown as exc:
+                print(f"{exc}: ending this run")
+                return 0
             line += f" Indeed sent {len(ind)} (new {res['added']})"
         rounds += 1
         print(f"{datetime.now(timezone.utc):%H:%M:%S} {line}, {time.time() - began:.0f}s", flush=True)
@@ -272,5 +308,13 @@ def main() -> int:
     return 0
 
 
+def run() -> int:
+    try:
+        return main()
+    except CloudDown as exc:  # e.g. inside a title check: end cleanly, the next run picks up from the saved read times
+        print(f"{exc}: ending this run")
+        return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
