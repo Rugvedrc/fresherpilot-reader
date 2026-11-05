@@ -1,7 +1,7 @@
 """FresherPilot reader for GitHub Actions: reads LinkedIn and Indeed while the laptop is off and hands new
 jobs to the cloud (FresherPilot Cloud), which checks them with AI and sends the Telegram alerts.
 
-Why here: the laptop reads from a home IP; when it's off, the cloud (Cloudflare) can't read LinkedIn/Indeed
+Why here: the cloud (Cloudflare) can't read LinkedIn/Indeed
 (rate-limited / blocked). GitHub's runners can (measured Nov 5 2026: LinkedIn 31/32 searches + 20/20 job
 pages, Indeed 360/360 jobs in 4 runs on 4 different runner IPs).
 
@@ -29,9 +29,14 @@ LI_JOB = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}"
 LI_GAP = 2.5          # seconds between LinkedIn requests (the laptop's pace)
 OVERLAP = 10 * 60     # read 10 min further back than the last read (posts show up in search a bit late)
 MIN_WINDOW = 30 * 60  # like the laptop's fast pass
-MAX_DETAILS = 80      # job pages per run (the rest: next run, the window isn't advanced)
-RUN_LIMIT = 11 * 60   # stop reading after this many seconds (the workflow runs every 10 min)
+MAX_DETAILS = 80      # job pages per round (the rest: next round, the window isn't advanced)
+# One run loops for almost GitHub's 6 h job limit (a LinkedIn round every ~2-4 min, Indeed every 10 min); the
+# cloud starts the next run (it waits in the queue meanwhile: workflow "concurrency"), so reading never stops.
+RUN_TOTAL = int(os.getenv("FP_RUN_MINUTES", "340")) * 60
+INDEED_EVERY = 10 * 60
+MIN_ROUND = 60        # seconds: a round faster than this waits (be polite)
 START = time.time()
+DEADLINE = START + RUN_TOTAL
 
 
 def cloud(path: str, body: dict | None = None) -> dict:
@@ -125,7 +130,7 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     pages = 1 if window <= 3600 else min(40, 2 + window // 3600)  # longer gap: read deeper
     new_cards: dict[str, dict] = {}
     for title, place in cfg["li_searches"]:
-        if time.time() - START > RUN_LIMIT * 0.6:
+        if time.time() > DEADLINE:
             return finish_li(new_cards, window), False
         params = {"keywords": title, "location": "India" if place == "Remote" else place, "f_TPR": f"r{window}",
                   "f_JT": "F", "sortBy": "DD"}
@@ -167,7 +172,7 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     errors = 0
     for role in cfg["indeed_roles"]:
         for place in cfg["places"]:
-            if time.time() - START > RUN_LIMIT:
+            if time.time() > DEADLINE:
                 return list(jobs.values()), False
             try:
                 df = scrape_jobs(site_name=["indeed"], search_term=role, country_indeed="India",
@@ -205,28 +210,37 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
 
 
 def main() -> int:
-    cfg = cloud("/api/reader" + ("?force=1" if os.getenv("FP_FORCE") == "1" else ""))
-    if not cfg["quiet"]:
-        print("Laptop app is online and reading the job sites: nothing to do.")
-        return 0
-    known = set(cfg["known"])
-    started = time.time()
-    print(f"Laptop quiet since {datetime.fromtimestamp(cfg['laptop_seen'] / 1000, timezone.utc):%Y-%m-%d %H:%M} UTC; "
-          f"{len(known)} known jobs")
-    read: dict[str, float] = {}
-    try:
-        li, done = read_linkedin(cfg, known)
-        if done:
-            read["linkedin"] = started
-    except Blocked as exc:
-        li = []
-        print(exc)
-    res = cloud("/api/ingest", {"jobs": li, "read": read})
-    print(f"LinkedIn: sent {len(li)}, new to the cloud {res['added']}")
-    ind, done = read_indeed(cfg, known)
-    res = cloud("/api/ingest", {"jobs": ind, "read": {"indeed": started} if done else {}})
-    print(f"Indeed: sent {len(ind)}, new to the cloud {res['added']}")
-    print(f"Done in {time.time() - START:.0f}s")
+    force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
+    last_indeed = 0.0
+    rounds = 0
+    while time.time() < DEADLINE:
+        began = time.time()
+        cfg = cloud("/api/reader" + force)  # fresh each round: settings, what's known, how far each board was read
+        if not cfg["quiet"]:
+            print("An always-on laptop app is reading the job sites: waiting.")
+            time.sleep(300)
+            continue
+        known = set(cfg["known"])
+        read: dict[str, float] = {}
+        try:
+            li, done = read_linkedin(cfg, known)
+            if done:
+                read["linkedin"] = began
+        except Blocked as exc:
+            li = []
+            print(exc)
+            time.sleep(120)
+        res = cloud("/api/ingest", {"jobs": li, "read": read})
+        line = f"round {rounds + 1}: LinkedIn sent {len(li)} (new {res['added']})"
+        if began - last_indeed >= INDEED_EVERY:
+            last_indeed = began
+            ind, done = read_indeed(cfg, known)
+            res = cloud("/api/ingest", {"jobs": ind, "read": {"indeed": began} if done else {}})
+            line += f", Indeed sent {len(ind)} (new {res['added']})"
+        rounds += 1
+        print(f"{datetime.now(timezone.utc):%H:%M:%S} {line}, {time.time() - began:.0f}s", flush=True)
+        time.sleep(max(0.0, MIN_ROUND - (time.time() - began)))
+    print(f"Done: {rounds} rounds in {(time.time() - START) / 60:.0f} min")
     return 0
 
 

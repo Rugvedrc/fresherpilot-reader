@@ -1,7 +1,7 @@
 name: read
 on:
   schedule:
-    - cron: "*/30 * * * *"   # backup only: the cloud starts this every 10 min while the laptop is off (GitHub delays its own schedule a lot)
+    - cron: "*/30 * * * *"   # backup only: the cloud starts a run every 10 min if none is waiting
   workflow_dispatch:
     inputs:
       force:
@@ -15,7 +15,7 @@ permissions:
 jobs:
   read:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 350   # the reader loops ~340 min; GitHub allows 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
