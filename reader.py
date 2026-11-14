@@ -189,9 +189,11 @@ def read_linkedin_companies(cfg: dict, known: set[str]) -> tuple[list[dict], boo
     aren't searchable on their own career pages but are listed on LinkedIn (Apply then redirects to the company page).
     All roles of the company; the title rules and the AI judge them. Returns (jobs, complete)."""
     companies = cfg.get("li_companies") or []
+    if SHARD in ("co0", "co1"):  # two machines: half the companies each (tier A first in both halves), a round ~35 s
+        companies = companies[int(SHARD[-1])::2]
     if not companies:
         return [], True
-    last = (cfg["read"] or {}).get("linkedin_co")
+    last = (cfg["read"] or {}).get(co_key())
     window, _ = window_for(last, cfg["laptop_seen"], cfg["posted_within_days"])
     window = min(window, 86400)  # a long gap: the last day is enough (the rest is old news for a fresher drive)
     pages = 3 if window <= 3600 else min(10, 3 + window // 3600)
@@ -229,7 +231,7 @@ def read_careers(cfg: dict, known: set[str], skipped: set[str]) -> tuple[list[di
             print(f"Careers {entry[2]} ({entry[0]}): {type(exc).__name__}: {str(exc)[:80]}")
             return None
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         results = list(pool.map(one, careers_src.COMPANIES))
     errors = sum(1 for r in results if r is None)
     cards = [c for r in results if r for c in r if f"Careers:{c['id']}" not in known and c["id"] not in skipped]
@@ -251,6 +253,10 @@ def read_careers(cfg: dict, known: set[str], skipped: set[str]) -> tuple[list[di
                      "url": c["url"], "description": c.get("description", ""), "work_type": c.get("work_type", ""),
                      "apply_mode": "site"})
     return jobs, errors < len(results)
+
+
+def co_key() -> str:
+    return "linkedin_co" if SHARD == "all" else f"linkedin_{SHARD}"
 
 
 def li_key() -> str:
@@ -320,13 +326,27 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     return items, errors < len(cfg["indeed_roles"]) * len(cfg["places"])
 
 
+def blog_poker() -> None:
+    """The FreshersHunt blog check runs in the cloud every minute (cron); this machine asks for it every 20 s as well, so a drive
+    published on the blog is found within ~20 s (and judged + alerted at once). Errors are ignored: the cron still runs."""
+    while time.time() < DEADLINE:
+        try:
+            requests.post(CLOUD + "/api/tick?step=blog", json={}, headers=HEAD, timeout=60)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(20)
+
+
 def main() -> int:
     force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
     do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed")
+    if SHARD == "careers":
+        import threading
+        threading.Thread(target=blog_poker, daemon=True).start()
     do_car = SHARD in ("all", "careers")  # company career sites: their own machine loops them back to back
     last_car = 0.0
     skipped_car: set[str] = set()
-    do_co = SHARD in ("all", "co")  # target-company searches: their own machine ("co") loops them back to back
+    do_co = SHARD in ("all", "co0", "co1")  # target-company searches: their own machines loop them back to back
     indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
     last_co = 0.0  # target-company LinkedIn searches: every li_company_every_min, on one machine only
@@ -366,11 +386,11 @@ def main() -> int:
                 print(f"{exc}: ending this run")
                 return 0
             line += f" LinkedIn sent {len(li)} (new {res['added']})"
-        if do_co and (SHARD == "co" or began - last_co >= 60 * (cfg.get("li_company_every_min") or 8)):
+        if do_co and (SHARD in ("co0", "co1") or began - last_co >= 60 * (cfg.get("li_company_every_min") or 8)):
             last_co = began
             try:
                 co, done = read_linkedin_companies(cfg, known)
-                res = cloud("/api/ingest", {"jobs": co, "read": {"linkedin_co": began} if done else {}})
+                res = cloud("/api/ingest", {"jobs": co, "read": {co_key(): began} if done else {}})
                 line += f" Companies sent {len(co)} (new {res['added']})"
             except Blocked as exc:
                 print(exc)
