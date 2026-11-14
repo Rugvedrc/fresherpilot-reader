@@ -183,10 +183,15 @@ def _phenom(cfg: str, name: str, since: datetime) -> list[dict]:
             if posted and posted < since:
                 return out
             rid = j.get("jobId") or j.get("reqId")
-            url = j.get("applyUrl") if str(j.get("externalApply")).lower() == "true" else ""
+            page = f"https://{host}/{country}/{lang.split('_')[0]}/job/{rid}/" + re.sub(r"[^A-Za-z0-9]+", "-", j.get("title") or "").strip("-")
+            # the real apply system (Workday etc.) is the main link, the career-site page the second button: cisco.com's page is blocked
+            # for some networks/browsers (CloudFront 403, reproduced Nov 14) and Workday has maintenance windows, so each is the other's fallback
+            apply_url = re.sub(r"/apply/?$", "", str(j.get("applyUrl") or ""))
+            use_apply = (apply_url.startswith("http") and host not in apply_url   # only real hiring systems (NTT's link is a SuccessFactors PREVIEW tenant)
+                         and bool(re.search(r"myworkdayjobs\.com|oraclecloud\.com|icims\.com|taleo\.net|smartrecruiters\.com|greenhouse\.io|lever\.co", apply_url)))
             out.append({"id": f"ph:{name}:{rid}", "title": j.get("title", ""), "company": name,
-                        "location": j.get("cityStateCountry") or j.get("location") or "India",
-                        "posted": _iso(posted) if posted else "", "url": url or f"https://{host}/{country}/{lang.split('_')[0]}/job/{rid}",
+                        "location": j.get("cityStateCountry") or j.get("location") or "India", "alt_url": page if use_apply else "",
+                        "posted": _iso(posted) if posted else "", "url": apply_url if use_apply else page,
                         "description": _strip(j.get("descriptionTeaser") or ""), "work_type": j.get("type") or "",
                         "_ph": f"https://{host}/{country}/{lang.split('_')[0]}/job/{rid}"})
         if len(jobs) < 20:
