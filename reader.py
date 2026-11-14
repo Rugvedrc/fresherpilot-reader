@@ -285,8 +285,12 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     hours = max(1, int(window / 3600 + 0.999))
     jobs: dict[str, dict] = {}
     errors = 0
-    for role in cfg["indeed_roles"]:
-        for place in cfg["places"]:
+    # the role x place searches, then (Nov 14) one search per target company: Indeed's text search on the company name returns its
+    # own jobs whatever the title; only rows whose company matches are kept
+    searches = [(role, place, None) for role in cfg["indeed_roles"] for place in cfg["places"]]
+    searches += [(name, "India", re.sub(r"[^a-z0-9 ]", "", name.lower()).split()[0]) for name, _cid in (cfg.get("li_companies") or [])]
+    for role, place, only_company in searches:
+        if True:
             if time.time() > DEADLINE:
                 return list(jobs.values()), False
             try:
@@ -300,6 +304,8 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
             for row in df.to_dict("records"):
                 jid = str(row.get("id") or "").removeprefix("in-")
                 if not jid or jid in jobs or f"Indeed:{jid}" in known or not row.get("title"):
+                    continue
+                if only_company and only_company not in re.sub(r"[^a-z0-9 ]", "", str(row.get("company") or "").lower()):
                     continue
                 p = row.get("date_posted")
                 pdt = datetime(p.year, p.month, p.day, tzinfo=timezone.utc) if hasattr(p, "year") else None
@@ -323,7 +329,7 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     if items:
         keep = cloud("/api/titles", {"titles": [j["title"] for j in items]})["keep"]
         items = [j for j, k in zip(items, keep) if k]
-    return items, errors < len(cfg["indeed_roles"]) * len(cfg["places"])
+    return items, errors < len(searches)
 
 
 def blog_poker() -> None:
