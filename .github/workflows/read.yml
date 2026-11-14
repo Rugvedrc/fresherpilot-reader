@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [li0, li1, indeed]   # 3 machines at once: half the LinkedIn searches each, and Indeed
+        shard: [li0, li1, indeed, co]   # 4 machines at once: half the LinkedIn searches each, Indeed, and the target-company searches
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
