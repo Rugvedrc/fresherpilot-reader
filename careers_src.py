@@ -29,6 +29,14 @@ INDIA = re.compile(r"india|bengaluru|bangalore|hyderabad|pune|mumbai|chennai|gur
 # (kind, config, company). Verified live Nov 14 2026 unless marked "to verify" (a tenant under Workday maintenance that day).
 COMPANIES: list[tuple[str, str, str]] = [
     ("amazon", "", "Amazon"),
+    ("cognizant", "", "Cognizant"),
+    ("wipro", "careers.wipro.com", "Wipro"),
+    ("sf_html", "careers.capgemini.com", "Capgemini"),
+    ("oracle", "fa-etvl-saasfaprod1.fa.ocs.oraclecloud.com|CX_1", "Zensar"),
+    ("workday", "accenture|AccentureCareers|wd103", "Accenture"),
+    ("workday", "genpact|External_Careers|wd108", "Genpact"),                 # to verify (maintenance on Nov 14)
+    ("workday", "kyndryl|KyndrylEarlyCareers|wd5", "Kyndryl"),                # to verify: the fresher site
+    ("workday", "kyndryl|KyndrylProfessionalCareers|wd5", "Kyndryl"),         # to verify
     # Eightfold: "host|domain"
     ("eightfold", "apply.careers.microsoft.com|microsoft.com", "Microsoft"),
     ("eightfold", "careers.qualcomm.com|qualcomm.com", "Qualcomm"),
@@ -255,7 +263,120 @@ def _workday_detail(card: dict) -> tuple[str, str]:
     return _strip(d.get("jobDescription") or ""), d.get("location") or ""
 
 
-LISTERS = {"amazon": _amazon, "eightfold": _eightfold, "phenom": _phenom, "oracle": _oracle, "workday": _workday}
+# ------------------------------------------------------------------ Cognizant (full jobs feed, newest first: only the top is read)
+
+def _cognizant(cfg: str, name: str, since: datetime) -> list[dict]:
+    """careers.cognizant.com publishes every job as one XML feed (title, date, url, city/state/country, description), newest
+    first. The feed is ~11 MB: it is streamed and reading stops at the first jobs older than `since`."""
+    out: list[dict] = []
+    r = _req("GET", "https://careers.cognizant.com/global-en/jobs/xml/?rss=true", headers={"User-Agent": UA}, stream=True, timeout=60)
+    r.raise_for_status()
+    buf, old, read = "", 0, 0
+    for chunk in r.iter_content(65536):
+        read += len(chunk)
+        buf += chunk.decode("utf-8", "ignore")
+        while True:
+            a, b = buf.find("<job>"), buf.find("</job>")
+            if a < 0 or b < 0:
+                break
+            block, buf = buf[a:b], buf[b + 6:]
+
+            def f(tag: str) -> str:
+                m = re.search(rf"<{tag}>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</{tag}>", block, re.S)
+                return m.group(1).strip() if m else ""
+
+            try:
+                posted = datetime.strptime(f("date"), "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+            except ValueError:
+                posted = None
+            if posted and posted < since:
+                old += 1
+                if old >= 5:  # a few out-of-order jobs are tolerated, then the rest is older
+                    r.close()
+                    return out
+                continue
+            if "india" not in f("country").lower():
+                continue
+            loc = ", ".join(x for x in (f("city"), f("state"), "India") if x)
+            out.append({"id": f"cg:{f('requisitionid')}", "title": _strip(f("title")), "company": "Cognizant", "location": loc,
+                        "posted": _iso(posted) if posted else "", "url": f("url"), "description": _strip(f("description"))})
+        if read > 8_000_000:
+            break
+    r.close()
+    return out
+
+
+# ------------------------------------------------------------------ Wipro (SuccessFactors recruiting service)
+
+def _wipro(cfg: str, name: str, since: datetime) -> list[dict]:
+    out: list[dict] = []
+    for page in range(0, 12):
+        body = {"locale": "en_US", "pageNumber": page, "sortBy": "date", "keywords": "", "location": "India", "facetFilters": {},
+                "brand": "", "skills": [], "categoryId": 0, "alertId": "", "rcmCandidateId": ""}
+        r = _req("POST", f"https://{cfg}/services/recruiting/v1/jobs", json=body, headers={**JSON, "Content-Type": "application/json"})
+        r.raise_for_status()
+        res = r.json().get("jobSearchResult") or []
+        for it in res:
+            x = it.get("response") or {}
+            try:
+                posted = datetime.strptime(x.get("unifiedStandardStart") or "", "%m/%d/%y").replace(tzinfo=timezone.utc)
+            except ValueError:
+                posted = None
+            if posted and posted < since - timedelta(days=1):
+                return out  # date-sorted: the rest is older
+            locs = x.get("sfstd_jobLocation_obj") or x.get("jobLocationShort") or []
+            loc = ", ".join(str(v) for v in (locs if isinstance(locs, list) else [locs])) + ", India"
+            title = x.get("unifiedStandardTitle") or ""
+            out.append({"id": f"wp:{x.get('id')}", "title": title, "company": name, "location": loc,
+                        "posted": _iso(posted) if posted else "",
+                        "url": f"https://{cfg}/job/{x.get('unifiedUrlTitle') or x.get('urlTitle')}/{x.get('id')}-en_US",
+                        "description": f"{name} job: {title}. Location: {loc}. (The posting text is not available without opening the page.)"})
+        if len(res) < 10:
+            break
+    return out
+
+
+# ------------------------------------------------------------------ SuccessFactors job-list pages (Capgemini)
+
+def _sf_html(cfg: str, name: str, since: datetime) -> list[dict]:
+    from bs4 import BeautifulSoup
+
+    out: list[dict] = []
+    for start in range(0, 150, 25):
+        r = _req("GET", f"https://{cfg}/search/", headers={"User-Agent": UA}, params={
+            "q": "", "locationsearch": "India", "sortColumn": "referencedate", "sortDirection": "desc", "startrow": start})
+        r.raise_for_status()
+        rows = BeautifulSoup(r.text, "html.parser").select("tr.data-row")
+        for row in rows:
+            a = row.select_one("a.jobTitle-link")
+            if not a:
+                continue
+            d = row.select_one(".jobDate")
+            posted = _parse_day(re.sub(r"\s+", " ", d.get_text()).strip()) if d else None
+            try:
+                posted = posted or datetime.strptime(re.sub(r"\s+", " ", d.get_text()).strip(), "%b %d, %Y").replace(tzinfo=timezone.utc)
+            except Exception:  # noqa: BLE001
+                pass
+            if posted and posted < since - timedelta(days=1):
+                return out
+            loc = row.select_one(".colLocation .jobLocation")
+            out.append({"id": f"sf:{name}:{a['href'].strip('/').rsplit('/', 1)[-1]}", "title": a.get_text(strip=True), "company": name,
+                        "location": re.sub(r"\s+", " ", loc.get_text(" ")).replace("+2 more…", "").strip() if loc else "India",
+                        "posted": _iso(posted) if posted else "", "url": f"https://{cfg}{a['href']}", "_sf": f"https://{cfg}{a['href']}"})
+        if len(rows) < 25:
+            break
+    return out
+
+
+def _sf_detail(card: dict) -> str:
+    from bs4 import BeautifulSoup
+
+    r = _req("GET", card["_sf"], headers={"User-Agent": UA})
+    e = BeautifulSoup(r.text, "html.parser").select_one(".jobdescription") if r.ok else None
+    return re.sub(r"\s+", " ", e.get_text(" ", strip=True)) if e else ""
+
+
+LISTERS = {"cognizant": _cognizant, "wipro": _wipro, "sf_html": _sf_html, "amazon": _amazon, "eightfold": _eightfold, "phenom": _phenom, "oracle": _oracle, "workday": _workday}
 
 
 def list_jobs(entry: tuple[str, str, str], since: datetime) -> list[dict]:
@@ -270,6 +391,8 @@ def detail(card: dict) -> dict:
             card["description"] = _eightfold_detail(card)
         elif "_or" in card:
             card["description"] = _oracle_detail(card)
+        elif "_sf" in card:
+            card["description"] = _sf_detail(card)
         elif "_wd" in card:
             desc, where = _workday_detail(card)
             card["description"] = desc
