@@ -250,8 +250,8 @@ def read_careers(cfg: dict, known: set[str], skipped: set[str]) -> tuple[list[di
             posted_dt = None
         jobs.append({"id": c["id"], "source": "Careers", "title": c["title"], "company": c["company"], "location": c["location"],
                      "experience": "Not specified", "posted": c.get("posted", "")[:10], "posted_days": days_ago(posted_dt),
-                     "url": c["url"], "description": c.get("description", ""), "work_type": c.get("work_type", ""),
-                     "apply_mode": "site"})
+                     "url": c["url"], "blog_url": c.get("alt_url", ""), "description": c.get("description", ""),
+                     "work_type": c.get("work_type", ""), "apply_mode": "site"})
     return jobs, errors < len(results)
 
 
