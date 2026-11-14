@@ -283,6 +283,7 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
 def main() -> int:
     force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
     do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed")
+    do_co = SHARD in ("all", "co")  # target-company searches: their own machine ("co") loops them back to back
     indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
     last_co = 0.0  # target-company LinkedIn searches: every li_company_every_min, on one machine only
@@ -292,7 +293,7 @@ def main() -> int:
     while time.time() < DEADLINE:
         began = time.time()
         sep = "&" if force else "?"
-        boards = ",".join(b for b, on in (("LinkedIn", do_li), ("Indeed", do_indeed)) if on)
+        boards = ",".join(b for b, on in (("LinkedIn", do_li or do_co), ("Indeed", do_indeed)) if on)
         try:  # settings, the known IDs of this machine's boards (after the first round: only new ones), read times
             cfg = cloud("/api/reader" + force + f"{sep}boards={boards}" + (f"&since={as_of}" if as_of else ""))
         except CloudDown as exc:
@@ -322,7 +323,7 @@ def main() -> int:
                 print(f"{exc}: ending this run")
                 return 0
             line += f" LinkedIn sent {len(li)} (new {res['added']})"
-        if SHARD in ("all", "li0") and began - last_co >= 60 * (cfg.get("li_company_every_min") or 8):
+        if do_co and (SHARD == "co" or began - last_co >= 60 * (cfg.get("li_company_every_min") or 8)):
             last_co = began
             try:
                 co, done = read_linkedin_companies(cfg, known)
