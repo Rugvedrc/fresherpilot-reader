@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from bs4 import BeautifulSoup
@@ -213,6 +213,46 @@ def read_linkedin_companies(cfg: dict, known: set[str]) -> tuple[list[dict], boo
     return finish_li(new_cards, window), True
 
 
+def read_careers(cfg: dict, known: set[str], skipped: set[str]) -> tuple[list[dict], bool]:
+    """Company career sites read directly (careers_src: Workday, Oracle HCM, Eightfold, Phenom, Amazon): the same openings the
+    FreshersHunt blog posts hours before Telegram. India only, last posted_within_days; jobs already known are skipped, only
+    new ones whose title passes the rules get a detail request. Returns (jobs, complete)."""
+    import careers_src
+    from concurrent.futures import ThreadPoolExecutor
+
+    since = datetime.now(timezone.utc) - timedelta(days=cfg["posted_within_days"])
+
+    def one(entry):
+        try:
+            return careers_src.list_jobs(entry, since)
+        except Exception as exc:  # noqa: BLE001 — one company (e.g. Workday maintenance) never stops the rest
+            print(f"Careers {entry[2]} ({entry[0]}): {type(exc).__name__}: {str(exc)[:80]}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(one, careers_src.COMPANIES))
+    errors = sum(1 for r in results if r is None)
+    cards = [c for r in results if r for c in r if f"Careers:{c['id']}" not in known and c["id"] not in skipped]
+    if not cards:
+        return [], errors < len(results)
+    keep = cloud("/api/titles", {"titles": [c["title"] for c in cards]})["keep"]
+    skipped.update(c["id"] for c, k in zip(cards, keep) if not k)  # title rules say no: not asked again this run
+    passing = [c for c, k in zip(cards, keep) if k]
+    print(f"Careers: {len(cards)} new cards, {len(passing)} pass the title rules ({errors} companies failed)")
+    jobs = []
+    for c in passing[:MAX_DETAILS]:
+        careers_src.detail(c)
+        try:
+            posted_dt = datetime.fromisoformat(c["posted"]) if c.get("posted") else None
+        except ValueError:
+            posted_dt = None
+        jobs.append({"id": c["id"], "source": "Careers", "title": c["title"], "company": c["company"], "location": c["location"],
+                     "experience": "Not specified", "posted": c.get("posted", "")[:10], "posted_days": days_ago(posted_dt),
+                     "url": c["url"], "description": c.get("description", ""), "work_type": c.get("work_type", ""),
+                     "apply_mode": "site"})
+    return jobs, errors < len(results)
+
+
 def li_key() -> str:
     return "linkedin" if SHARD == "all" else f"linkedin_{SHARD}"
 
@@ -283,6 +323,9 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
 def main() -> int:
     force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
     do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed")
+    do_car = SHARD in ("all", "careers")  # company career sites: their own machine loops them back to back
+    last_car = 0.0
+    skipped_car: set[str] = set()
     do_co = SHARD in ("all", "co")  # target-company searches: their own machine ("co") loops them back to back
     indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
@@ -293,7 +336,7 @@ def main() -> int:
     while time.time() < DEADLINE:
         began = time.time()
         sep = "&" if force else "?"
-        boards = ",".join(b for b, on in (("LinkedIn", do_li or do_co), ("Indeed", do_indeed)) if on)
+        boards = ",".join(b for b, on in (("LinkedIn", do_li or do_co), ("Indeed", do_indeed), ("Careers", do_car)) if on)
         try:  # settings, the known IDs of this machine's boards (after the first round: only new ones), read times
             cfg = cloud("/api/reader" + force + f"{sep}boards={boards}" + (f"&since={as_of}" if as_of else ""))
         except CloudDown as exc:
@@ -334,6 +377,17 @@ def main() -> int:
             except CloudDown as exc:
                 print(f"{exc}: ending this run")
                 return 0
+        if do_car and (SHARD == "careers" or began - last_car >= 10 * 60):
+            last_car = began
+            try:
+                cj, done = read_careers(cfg, known, skipped_car)
+                res = cloud("/api/ingest", {"jobs": cj, "read": {"careers": began} if done else {}})
+                line += f" Careers sent {len(cj)} (new {res['added']})"
+            except CloudDown as exc:
+                print(f"{exc}: ending this run")
+                return 0
+            except Exception as exc:  # noqa: BLE001
+                print(f"Careers round failed: {type(exc).__name__}: {str(exc)[:100]}")
         if do_indeed and began - last_indeed >= indeed_every:
             last_indeed = began
             ind, done = read_indeed(cfg, known)
