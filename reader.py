@@ -160,7 +160,7 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     # a new machine split starts where the last LinkedIn read (any split) ended, not 3 days back
     last = read.get(li_key()) or max([v for k, v in read.items() if k.startswith("linkedin")] or [0]) or None
     window, _ = window_for(last, cfg["laptop_seen"], cfg["posted_within_days"])
-    pages = 1 if window <= 3600 else min(40, 2 + window // 3600)  # longer gap: read deeper
+    pages = 3 if window <= 3600 else min(40, 3 + window // 3600)  # page 1 all new = read on (a hot search has >10 new in a window)  # longer gap: read deeper
     new_cards: dict[str, dict] = {}
     searches = cfg["li_searches"]
     if SHARD in ("li0", "li1"):
@@ -181,6 +181,35 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
                 new_cards[c["id"]] = c
             if len(found) < 10 or not fresh:
                 break  # last page, or only known jobs: the rest is older
+    return finish_li(new_cards, window), True
+
+
+def read_linkedin_companies(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
+    """One company-filtered LinkedIn search (f_C) per target company (IBM, NTT DATA, Cognizant...): their fresher jobs
+    aren't searchable on their own career pages but are listed on LinkedIn (Apply then redirects to the company page).
+    All roles of the company; the title rules and the AI judge them. Returns (jobs, complete)."""
+    companies = cfg.get("li_companies") or []
+    if not companies:
+        return [], True
+    last = (cfg["read"] or {}).get("linkedin_co")
+    window, _ = window_for(last, cfg["laptop_seen"], cfg["posted_within_days"])
+    window = min(window, 86400)  # a long gap: the last day is enough (the rest is old news for a fresher drive)
+    pages = 3 if window <= 3600 else min(10, 3 + window // 3600)
+    new_cards: dict[str, dict] = {}
+    began = time.time()
+    for name, cid in companies:
+        if time.time() > DEADLINE or time.time() - began > 420:  # never hold up this machine's regular rounds for long
+            return finish_li(new_cards, window), False  # not complete: the read time isn't advanced, known IDs are skipped next time
+        params = {"f_C": cid, "location": "India", "f_TPR": f"r{window}", "sortBy": "DD"}
+        for page in range(int(pages)):
+            r = li_get(LI_SEARCH, {**params, "start": page * 10})
+            found = li_cards(r.text) if r is not None else []
+            fresh = [c for c in found if f"LinkedIn:{c['id']}" not in known and c["id"] not in new_cards]
+            for c in fresh:
+                new_cards[c["id"]] = c
+            if len(found) < 10 or not fresh:
+                break
+    print(f"LinkedIn target companies: {len(companies)} searched, {len(new_cards)} new cards")
     return finish_li(new_cards, window), True
 
 
@@ -256,6 +285,7 @@ def main() -> int:
     do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed")
     indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
+    last_co = 0.0  # target-company LinkedIn searches: every li_company_every_min, on one machine only
     rounds = 0
     known: set[str] = set()
     as_of = 0  # cloud time of the last known-ID list: after the first full list, only newer IDs are sent
@@ -292,6 +322,17 @@ def main() -> int:
                 print(f"{exc}: ending this run")
                 return 0
             line += f" LinkedIn sent {len(li)} (new {res['added']})"
+        if SHARD in ("all", "li0") and began - last_co >= 60 * (cfg.get("li_company_every_min") or 8):
+            last_co = began
+            try:
+                co, done = read_linkedin_companies(cfg, known)
+                res = cloud("/api/ingest", {"jobs": co, "read": {"linkedin_co": began} if done else {}})
+                line += f" Companies sent {len(co)} (new {res['added']})"
+            except Blocked as exc:
+                print(exc)
+            except CloudDown as exc:
+                print(f"{exc}: ending this run")
+                return 0
         if do_indeed and began - last_indeed >= indeed_every:
             last_indeed = began
             ind, done = read_indeed(cfg, known)
