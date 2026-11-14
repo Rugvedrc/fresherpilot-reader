@@ -187,7 +187,8 @@ def _phenom(cfg: str, name: str, since: datetime) -> list[dict]:
             out.append({"id": f"ph:{name}:{rid}", "title": j.get("title", ""), "company": name,
                         "location": j.get("cityStateCountry") or j.get("location") or "India",
                         "posted": _iso(posted) if posted else "", "url": url or f"https://{host}/{country}/{lang.split('_')[0]}/job/{rid}",
-                        "description": _strip(j.get("descriptionTeaser") or ""), "work_type": j.get("type") or ""})
+                        "description": _strip(j.get("descriptionTeaser") or ""), "work_type": j.get("type") or "",
+                        "_ph": f"https://{host}/{country}/{lang.split('_')[0]}/job/{rid}"})
         if len(jobs) < 20:
             break
     return out
@@ -330,7 +331,7 @@ def _wipro(cfg: str, name: str, since: datetime) -> list[dict]:
             out.append({"id": f"wp:{x.get('id')}", "title": title, "company": name, "location": loc,
                         "posted": _iso(posted) if posted else "",
                         "url": f"https://{cfg}/job/{x.get('unifiedUrlTitle') or x.get('urlTitle')}/{x.get('id')}-en_US",
-                        "description": f"{name} job: {title}. Location: {loc}. (The posting text is not available without opening the page.)"})
+                        "_sf": f"https://{cfg}/job/{x.get('unifiedUrlTitle') or x.get('urlTitle')}/{x.get('id')}-en_US"})
         if len(res) < 10:
             break
     return out
@@ -372,8 +373,32 @@ def _sf_detail(card: dict) -> str:
     from bs4 import BeautifulSoup
 
     r = _req("GET", card["_sf"], headers={"User-Agent": UA})
-    e = BeautifulSoup(r.text, "html.parser").select_one(".jobdescription") if r.ok else None
-    return re.sub(r"\s+", " ", e.get_text(" ", strip=True)) if e else ""
+    if not r.ok:
+        return ""
+    soup = BeautifulSoup(r.text, "html.parser")
+    e = soup.select_one(".jobdescription")
+    if e:
+        return re.sub(r"\s+", " ", e.get_text(" ", strip=True))
+    spans = [re.sub(r"\s+", " ", x.get_text(" ", strip=True)) for x in soup.select('[itemprop="description"]')]  # Wipro: company blurb + the posting
+    return " ".join(sp for sp in spans if sp)[:8000]
+
+
+def _phenom_detail(card: dict) -> str:
+    """The job page embeds the full posting as JSON ("description":"<html>"); the list only has a one-line teaser."""
+    import json as _json
+    r = _req("GET", card["_ph"], headers={"User-Agent": UA})
+    if not r.ok:
+        return ""
+    best, i, dec = "", r.text.find('"description":"'), _json.JSONDecoder()
+    while i >= 0:
+        try:
+            val, _ = dec.raw_decode(r.text[i + len('"description":'):])
+            if isinstance(val, str) and len(val) > len(best):
+                best = val
+        except ValueError:
+            pass
+        i = r.text.find('"description":"', i + 10)
+    return _strip(unescape(best))
 
 
 LISTERS = {"cognizant": _cognizant, "wipro": _wipro, "sf_html": _sf_html, "amazon": _amazon, "eightfold": _eightfold, "phenom": _phenom, "oracle": _oracle, "workday": _workday}
@@ -391,6 +416,10 @@ def detail(card: dict) -> dict:
             card["description"] = _eightfold_detail(card)
         elif "_or" in card:
             card["description"] = _oracle_detail(card)
+        elif "_ph" in card:
+            full = _phenom_detail(card)
+            if len(full) > len(card.get("description", "")):
+                card["description"] = full
         elif "_sf" in card:
             card["description"] = _sf_detail(card)
         elif "_wd" in card:
