@@ -18,6 +18,10 @@ import time
 import traceback
 from pathlib import Path
 
+# Gentle pace = the best protection for the owner's accounts: a daily cap per portal and a random pause between applications.
+DAILY_CAP = {"LinkedIn": 0, "Naukri": 40, "Indeed": 30, "Internshala": 30, "Wellfound": 20, "Foundit": 30}
+PAUSE = (35, 95)   # seconds between two applications
+
 PORTALS = ["https://www.linkedin.com/login", "https://www.naukri.com/nlogin/login", "https://secure.indeed.com/auth", "https://internshala.com/login", "https://wellfound.com/login"]
 
 
@@ -46,8 +50,21 @@ def main() -> int:
     prof_dir = a.profile or str(root / "users" / next(p.name for p in (root / "users").iterdir() if (p / "applicant_profile.json").exists()) / "applybot_profile")
     Path(prof_dir).mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("GMAIL_USER", "")
+    if a.login:
+        # Sign in in a PLAIN Chrome (no automation flags): Google / LinkedIn refuse sign-in in a browser an automation tool controls.
+        # The same profile folder is then used by the runner, so the sessions carry over.
+        import glob
+        import subprocess
+        chrome = next((c for c in (os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"), os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+                                   os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe")) if os.path.exists(c)), "")
+        if not chrome:
+            print("Chrome not found")
+            return 1
+        print("Opening a normal Chrome window. Sign in to each tab (LinkedIn: use Google if you like), then close the window. Profile:", prof_dir)
+        subprocess.run([chrome, f"--user-data-dir={prof_dir}", "--no-first-run", "--no-default-browser-check", *PORTALS])
+        return 0
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(prof_dir, channel="chrome", headless=False, viewport=None, args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
+        ctx = p.chromium.launch_persistent_context(prof_dir, channel="chrome", headless=False, viewport=None, args=["--start-maximized", "--disable-blink-features=AutomationControlled"], ignore_default_args=["--enable-automation"],
                                                    locale="en-IN", timezone_id="Asia/Kolkata")
         if a.login:
             for u in PORTALS:
@@ -60,11 +77,26 @@ def main() -> int:
             except Exception:  # noqa: BLE001
                 pass
             return 0
+        import random
+        done_today: dict[str, int] = {}
+        day = time.strftime("%Y-%m-%d")
         resume_path = ""
+        from applybot import mailwatch
+        try:   # GMAIL_USER defaults to the profile email; the app password comes from .env
+            if not os.environ.get("GMAIL_USER"):
+                import json as _j
+                os.environ["GMAIL_USER"] = _j.loads(cloud.file("profile")["body"])["personal"]["email"]
+        except Exception:  # noqa: BLE001
+            pass
+        if mailwatch.start():
+            print("Gmail watcher on: codes and verification links are forwarded to Telegram", flush=True)
         print("local apply runner: waiting for jobs (Ctrl+C to stop)", flush=True)
         while True:
             try:
-                claim = cloud._call("GET", "/api/apply/claim?scope=local")
+                if time.strftime("%Y-%m-%d") != day:
+                    day, done_today = time.strftime("%Y-%m-%d"), {}
+                capped = ",".join(k for k in DAILY_CAP if done_today.get(k, 0) >= DAILY_CAP[k])   # cap 0 (LinkedIn) = never claimed
+                claim = cloud._call("GET", "/api/apply/claim?scope=local" + (f"&skip={capped}" if capped else ""))
             except Exception as e:  # noqa: BLE001
                 print("cloud not reachable:", str(e)[:80])
                 time.sleep(30)
@@ -74,6 +106,9 @@ def main() -> int:
                 if a.once:
                     break
                 time.sleep(15)
+                continue
+            if str(job.get("source", "")).lower() == "linkedin" or "linkedin.com" in str(job.get("url", "")):
+                cloud.result(job["id"], "skipped", "LinkedIn jobs are never auto-applied (protects your account): apply by hand", "")
                 continue
             profile = claim.get("profile")
             dry = a.dry or bool(cloud._call("GET", "/api/apply/dry").get("dry", True))
@@ -101,6 +136,9 @@ def main() -> int:
                             pass
                 print(f"   -> {status}: {detail}", flush=True)
                 cloud.result(job["id"], status, detail, steps)
+                if status == "applied":
+                    done_today[job["source"]] = done_today.get(job["source"], 0) + 1
+                time.sleep(random.uniform(*PAUSE))
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 try:

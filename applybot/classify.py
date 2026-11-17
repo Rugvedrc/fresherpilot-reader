@@ -14,7 +14,7 @@ BLOCKED = re.compile(r"(access denied|you have been blocked|request unsuccessful
 OTP_LABEL = re.compile(r"(verification|security|one[- ]?time|confirmation|activation|passcode|otp|authenticat)\w* ?(code|pin|password|number)?|^code$|enter (the )?code|6[- ]digit", re.I)
 VERIFY_EMAIL = re.compile(r"(verify your email|check your (e-?mail|inbox)|we('| ha)ve sent (you )?(an )?(e-?mail|a link|a verification)|confirmation (e-?mail|link)|activate your account|"
                           r"click (on )?the link (in|we)|email (has been|was) sent|verification (e-?mail|link) (has been |was )?sent)", re.I)
-APPLY_WORDS = re.compile(r"^(apply( now| here| for this job| for job| to this job| online| externally)?|apply manually|start (your )?application|i'?m interested|apply (on|at) (company|employer)|"
+APPLY_WORDS = re.compile(r"^(apply( now| here| for this job| for job| to this job| online| externally)?|apply manually|start (your )?application|i'?m interested|apply (on|at|via|through) (the )?(company|employer)( (career|careers))?( site| website| page)?|apply (externally|on website)|"
                          r"easy apply|submit (your )?application|begin application|apply with (linkedin|resume)|use my last application|quick apply|apply for this position)$", re.I)
 FINAL = re.compile(r"^(submit( application| my application)?|send application|finish( application)?|apply|apply now|complete application|confirm( and submit)?|review and submit|submit & apply|agree and submit)$", re.I)
 NEXT = re.compile(r"^(save (and|&) continue|next|continue|proceed|save and next|next step|go to next|continue to .+|save & next|save|review|next page|continue application)$", re.I)
@@ -36,8 +36,8 @@ def classify(s: dict) -> str:
         return "blocked"
     if SUBMITTED.search(text) and not any(b["text"].lower() in ("submit", "submit application") for b in s["buttons"] if not b["disabled"]):
         return "submitted"
-    if ALREADY.search(text):
-        return "already_applied"
+    if ALREADY.search(text) or any(re.match(r"^(\W*)(applied|already applied|application submitted)(\W*)$", b["text"], re.I) for b in s["buttons"]):
+        return "already_applied"   # Indeed / Naukri show a greyed "Applied" button
     if CLOSED.search(text) and len(fillable) < 3 and not any(APPLY_WORDS.match(b["text"]) for b in s["buttons"] if not b["disabled"]):
         return "closed"
 
@@ -66,7 +66,7 @@ def classify(s: dict) -> str:
     if re.search(r"^(sign ?in|log ?in)\b", " ".join(s["headings"]).lower()) and any(f["kind"] in ("email", "text") for f in fillable) and len(fillable) <= 3:
         return "signin"   # email-first sign-in (password on the next page)
 
-    searchy = re.compile(r"search|keyword|location|filter|find (a )?jobs?|job title|query|requisition", re.I)
+    searchy = re.compile(r"search|keyword|location|filter|find (a )?jobs?|job title|query|requisition|city, state|postcode|what|where", re.I)
     appf = [f for f in fillable if f["kind"] != "checkbox" and not searchy.search(f"{f['label']} {f['name']} {f['placeholder']}")]
     if any(APPLY_WORDS.match(b["text"]) for b in s["buttons"] if not b["disabled"]) and len(appf) < 2 and not any(f["kind"] in ("file", "textarea", "radio") for f in fields):
         return "job_detail"   # a job page whose only inputs are the site's search boxes

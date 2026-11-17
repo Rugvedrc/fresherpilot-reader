@@ -425,7 +425,7 @@ class Run:
             names = ", ".join(sorted({(f["label"] or f["name"] or f["kind"])[:60] for f in missing})[:6])
             return "needs_you", f"Couldn't answer: {names}"
         if not target:
-            return "needs_you", "No Next / Submit button found"
+            return "needs_you", "No Next / Submit button found; buttons: " + ", ".join(x["text"][:20] for x in snap2["buttons"][:8])
         if final and FINAL.match(target["text"]) and self.dry:
             return "needs_you", "DRY RUN: everything filled, stopped before the final Submit"
         self.press(snap2, target)
