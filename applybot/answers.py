@@ -10,7 +10,7 @@ from .answerbank import alias_match, bank_answer, alts as _alts
 
 CONSENT = re.compile(r"(i agree|agree to|i accept|accept (the )?(terms|privacy|policy)|consent|terms (and|&) conditions|privacy (policy|notice|statement)|declar|certify|confirm that|acknowledge|"
                      r"i have read|authori[sz]e|data (protection|processing)|information (provided|given) (is|are) (true|correct|accurate))", re.I)
-MARKETING = re.compile(r"(newsletter|marketing|promotional|job alerts?|email me|text me|sms|notify me|keep me (informed|updated)|talent community|stay connected|opt[- ]?in|receive (updates|emails|communications))", re.I)
+MARKETING = re.compile(r"(follow |newsletter|marketing|promotional|job alerts?|email me|text me|sms|notify me|keep me (informed|updated)|talent community|stay connected|opt[- ]?in|receive (updates|emails|communications))", re.I)
 
 
 def _norm(t: str) -> str:

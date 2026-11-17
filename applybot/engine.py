@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 from . import actions as act
-from . import cloud
+from . import cloud, mail
 from .answers import resolve
 from .classify import APPLY_WORDS, CREATE_BTN, FINAL, NEXT, classify
 from .snap import locate, snapshot, state_key
@@ -287,9 +287,15 @@ class Run:
 
     def do_otp(self, snap: dict) -> tuple[str, str] | None:
         host = snap["host"]
-        req = cloud.otp_request(self.job["id"], "code", "", host)
-        self.log("waiting for the verification code from Telegram")
-        code = cloud.otp_wait(req, self.job["id"])
+        code = None
+        got = mail.wait(host, self.t0 - 180, "code", 3, [self.job.get("company", "")])   # straight from Gmail: nothing for the owner to do
+        if got:
+            self.log(f"read the {got[0]} from Gmail")
+            code = got[1]
+        else:
+            req = cloud.otp_request(self.job["id"], "code", "", host)
+            self.log("no mail found: asking on Telegram")
+            code = cloud.otp_wait(req, self.job["id"])
         if not code:
             return "needs_you", f"{host} wanted a verification code and none arrived in 10 minutes"
         if code.startswith("http"):
@@ -309,9 +315,15 @@ class Run:
 
     def do_verify_email(self, snap: dict) -> tuple[str, str] | None:
         host = snap["host"]
-        req = cloud.otp_request(self.job["id"], "link", "Open the email from this site and send me its verification link", host)
-        self.log("waiting for the verification link from Telegram")
-        val = cloud.otp_wait(req, self.job["id"])
+        val = None
+        got = mail.wait(host, self.t0 - 180, "link", 3, [self.job.get("company", "")])
+        if got:
+            self.log(f"read the {got[0]} from Gmail")
+            val = got[1]
+        else:
+            req = cloud.otp_request(self.job["id"], "link", "Open the email from this site and send me its verification link", host)
+            self.log("no mail found: asking on Telegram")
+            val = cloud.otp_wait(req, self.job["id"])
         if not val:
             return "needs_you", f"{host} wants the email verified and nothing arrived in 10 minutes"
         if val.startswith("http"):

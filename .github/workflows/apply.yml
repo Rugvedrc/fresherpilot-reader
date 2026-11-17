@@ -23,4 +23,6 @@ jobs:
           FP_CLOUD_URL: ${{ secrets.FP_CLOUD_URL }}
           FP_CLOUD_SECRET: ${{ secrets.FP_CLOUD_SECRET }}
           APPLY_PW_SECRET: ${{ secrets.APPLY_PW_SECRET }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           DRY_RUN: ${{ inputs.dry_run }}

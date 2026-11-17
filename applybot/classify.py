@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import re
 
-SUBMITTED = re.compile(r"(application (has been |was |is )?(successfully )?(submitted|received|sent)|thank you for (applying|your application|submitting)|successfully (applied|submitted)|"
+SUBMITTED = re.compile(r"(application (has been |was |is )?(successfully )?(submitted|received|sent)|application sent|applied successfully|successfully applied to|thank you for (applying|your application|submitting)|successfully (applied|submitted)|"
                        r"we('| ha)ve received your application|you('ve| have) (successfully )?applied|your application (is|has been) (complete|submitted|received)|application complete)", re.I)
 CLOSED = re.compile(r"(no longer (accepting|available|open)|position (has been |is )?(filled|closed)|job (is |has been )?(closed|expired|removed|no longer)|"
                     r"(this )?(job|position|requisition|posting) (is )?(no longer|not) (available|active|open)|has (been )?expired|applications? (are |is )?closed|"
                     r"not currently accepting|page (you are looking for )?(cannot|can't|could not) be found|404|job not found|vacancy (is )?closed)", re.I)
-ALREADY = re.compile(r"(you('ve| have) already applied|already applied (for|to) this|you have previously applied|application (already )?(exists|in progress)|already submitted an application)", re.I)
+ALREADY = re.compile(r"(you('ve| have) already applied|already applied (for|to) this|applied \d+ (minute|hour|day|week|month)s? ago|application submitted \d+|you applied (on|for)|you have previously applied|application (already )?(exists|in progress)|already submitted an application)", re.I)
 BLOCKED = re.compile(r"(access denied|you have been blocked|request unsuccessful|pardon our interruption|unusual traffic|are you a robot|verify you are (a )?human|"
                      r"checking your browser|just a moment|attention required|press (&|and) hold|security check)", re.I)
 OTP_LABEL = re.compile(r"(verification|security|one[- ]?time|confirmation|activation|passcode|otp|authenticat)\w* ?(code|pin|password|number)?|^code$|enter (the )?code|6[- ]digit", re.I)
