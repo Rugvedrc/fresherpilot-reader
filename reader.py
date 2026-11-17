@@ -255,6 +255,10 @@ def read_careers(cfg: dict, known: set[str], skipped: set[str]) -> tuple[list[di
     return jobs, errors < len(results)
 
 
+def indeed_key() -> str:
+    return "indeed" if SHARD in ("all", "indeed") else f"indeed_{SHARD}"
+
+
 def co_key() -> str:
     return "linkedin_co" if SHARD == "all" else f"linkedin_{SHARD}"
 
@@ -281,14 +285,20 @@ def finish_li(cards: dict[str, dict], window: int) -> list[dict]:
 def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     from jobspy import scrape_jobs
 
-    window, _ = window_for((cfg["read"] or {}).get("indeed"), cfg["laptop_seen"], cfg["posted_within_days"])
+    window, _ = window_for((cfg["read"] or {}).get(indeed_key()), cfg["laptop_seen"], cfg["posted_within_days"])
     hours = max(1, int(window / 3600 + 0.999))
     jobs: dict[str, dict] = {}
     errors = 0
     # the role x place searches, then (Nov 14) one search per target company: Indeed's text search on the company name returns its
     # own jobs whatever the title; only rows whose company matches are kept
-    searches = [(role, place, None) for role in cfg["indeed_roles"] for place in cfg["places"]]
-    searches += [(name, "India", re.sub(r"[^a-z0-9 ]", "", name.lower()).split()[0]) for name, _cid in (cfg.get("li_companies") or [])]
+    # Nov 17: the company searches (~90 names) run on their own two machines (ic0 / ic1, half the names each) so every company is
+    # searched every few minutes; the "indeed" machine does the role x place searches only. "all" = both (one machine).
+    searches = [] if SHARD in ("ic0", "ic1") else [(role, place, None) for role in cfg["indeed_roles"] for place in cfg["places"]]
+    companies = list(cfg.get("li_companies") or [])
+    if SHARD in ("ic0", "ic1"):
+        companies = companies[int(SHARD[-1])::2]
+    if SHARD != "indeed":
+        searches += [(name, "India", re.sub(r"[^a-z0-9 ]", "", name.lower()).split()[0]) for name, _cid in companies]
     for role, place, only_company in searches:
         if True:
             if time.time() > DEADLINE:
@@ -305,7 +315,7 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
                 jid = str(row.get("id") or "").removeprefix("in-")
                 if not jid or jid in jobs or f"Indeed:{jid}" in known or not row.get("title"):
                     continue
-                if only_company and only_company not in re.sub(r"[^a-z0-9 ]", "", str(row.get("company") or "").lower()):
+                if only_company and not re.search(r"\b" + re.escape(only_company) + r"\b", re.sub(r"[^a-z0-9 ]", "", str(row.get("company") or "").lower())):
                     continue
                 p = row.get("date_posted")
                 pdt = datetime(p.year, p.month, p.day, tzinfo=timezone.utc) if hasattr(p, "year") else None
@@ -345,7 +355,7 @@ def blog_poker() -> None:
 
 def main() -> int:
     force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
-    do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed")
+    do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed", "ic0", "ic1")
     if SHARD == "careers":
         import threading
         threading.Thread(target=blog_poker, daemon=True).start()
@@ -353,7 +363,7 @@ def main() -> int:
     last_car = 0.0
     skipped_car: set[str] = set()
     do_co = SHARD in ("all", "co0", "co1")  # target-company searches: their own machines loop them back to back
-    indeed_every = 0 if SHARD == "indeed" else INDEED_EVERY  # its own machine: back to back
+    indeed_every = 0 if SHARD in ("indeed", "ic0", "ic1") else INDEED_EVERY  # its own machine: back to back
     last_indeed = 0.0
     last_co = 0.0  # target-company LinkedIn searches: every li_company_every_min, on one machine only
     rounds = 0
@@ -418,7 +428,7 @@ def main() -> int:
             last_indeed = began
             ind, done = read_indeed(cfg, known)
             try:
-                res = cloud("/api/ingest", {"jobs": ind, "read": {"indeed": began} if done else {}})
+                res = cloud("/api/ingest", {"jobs": ind, "read": {indeed_key(): began} if done else {}})
             except CloudDown as exc:
                 print(f"{exc}: ending this run")
                 return 0

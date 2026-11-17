@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [indeed]   # Indeed: roles x places + one search per target company
+        shard: [indeed, ic0, ic1]   # Indeed: roles x places (indeed) + the target-company searches, half the names each (ic0, ic1)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
