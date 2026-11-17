@@ -21,6 +21,9 @@ SOCIAL = re.compile(r"(google|linkedin|facebook|apple|microsoft|github|indeed|se
 class Stuck(Exception):
     pass
 
+# portals where the OWNER's own account is used (never create an account there): when logged out the runner asks once on Telegram and waits
+PORTAL = re.compile(r"(^|\.)(linkedin\.com|naukri\.com|indeed\.com|internshala\.com|wellfound\.com|foundit\.in)$", re.I)
+
 
 MAX_STEPS = 70
 MAX_SECONDS = 15 * 60
@@ -195,8 +198,31 @@ class Run:
                 return b
         return None
 
+    def wait_for_owner_login(self, snap: dict) -> tuple[str, str] | None:
+        """A job portal shows its login page: the owner signs in once in this Chrome window (asked on Telegram); the session is kept for good."""
+        host = snap["host"]
+        self.log(f"not signed in to {host}: asking the owner once")
+        try:
+            cloud.otp_request(self.job["id"], "login", f"Sign in to {host} in the Chrome window on your laptop (only the first time).", host)
+        except Exception:  # noqa: BLE001
+            pass
+        end = time.time() + 20 * 60
+        while time.time() < end:
+            self.page.wait_for_timeout(5000)
+            cloud.alive(self.job["id"])
+            try:
+                sn = snapshot(self.page)
+            except Exception:  # noqa: BLE001
+                continue
+            if classify(sn) not in ("signin", "create_account") or not PORTAL.search(sn["host"]):
+                self.log("signed in, continuing")
+                return None
+        return "needs_you", f"Not signed in to {host}: sign in in the Chrome window and I will retry"
+
     def do_signin(self, snap: dict) -> tuple[str, str] | None:
         host = snap["host"]
+        if PORTAL.search(host):
+            return self.wait_for_owner_login(snap)
         email, pw = self.email_pw(host)
         known = host in self.accounts or host in self.created
         make = self._find_link(snap, re.compile(r"(create (an )?account|register|sign ?up|new (user|candidate)|don't have an account|join)", re.I))
@@ -262,6 +288,8 @@ class Run:
 
     def do_create(self, snap: dict) -> tuple[str, str] | None:
         host = snap["host"]
+        if PORTAL.search(host):
+            return self.wait_for_owner_login(snap)
         email, pw = self.email_pw(host)
         pwf = [f for f in snap["fields"] if f["kind"] == "password"]
         for f in pwf:
