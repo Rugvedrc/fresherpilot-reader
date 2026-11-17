@@ -41,6 +41,8 @@ def classify(s: dict) -> str:
     if CLOSED.search(text) and len(fillable) < 3 and not any(APPLY_WORDS.match(b["text"]) for b in s["buttons"] if not b["disabled"]):
         return "closed"
 
+    if re.search(r"(already (an )?account|account (already )?exists|already registered|already have an account (with|for) (this|that) e-?mail|e-?mail (is )?already (in use|registered|exists))", low) and not any(f["kind"] == "password" for f in fields):
+        return "account_exists"
     # one-time code: a single short input labelled like a code, or autocomplete=one-time-code, or several single-digit boxes
     boxes = [f for f in fillable if f["kind"] in ("text", "number", "code", "tel")]
     if any(f["autocomplete"] == "one-time-code" for f in boxes):
@@ -54,6 +56,8 @@ def classify(s: dict) -> str:
     if VERIFY_EMAIL.search(text[:1500]) and len(fillable) <= 2 and not pw:
         return "verify_email"
 
+    if len(pw) == 1 and len(fillable) == 1 and re.search(r"passcode|verification code|one[- ]?time|security code|\botp\b|code (was )?sent|enter (the |your )?code|pin", f"{pw[0]['label']} {pw[0]['name']} {low[:700]}"):
+        return "otp"   # the code box is masked (type=password) on some portals
     if pw:
         if len(pw) >= 2 or CREATE_BTN.search(" ".join(h for h in s["headings"]) + " " + " ".join(b["text"] for b in s["buttons"] if not b["link"])):
             if len(pw) >= 2 or re.search(r"create (an )?account|register|sign ?up|new (user|account)", " ".join(s["headings"]).lower() + " " + s["title"].lower()):
@@ -62,6 +66,10 @@ def classify(s: dict) -> str:
     if re.search(r"^(sign ?in|log ?in)\b", " ".join(s["headings"]).lower()) and any(f["kind"] in ("email", "text") for f in fillable) and len(fillable) <= 3:
         return "signin"   # email-first sign-in (password on the next page)
 
+    searchy = re.compile(r"search|keyword|location|filter|find (a )?jobs?|job title|query|requisition", re.I)
+    appf = [f for f in fillable if f["kind"] != "checkbox" and not searchy.search(f"{f['label']} {f['name']} {f['placeholder']}")]
+    if any(APPLY_WORDS.match(b["text"]) for b in s["buttons"] if not b["disabled"]) and len(appf) < 2 and not any(f["kind"] in ("file", "textarea", "radio") for f in fields):
+        return "job_detail"   # a job page whose only inputs are the site's search boxes
     real = [f for f in fillable if f["kind"] not in ("checkbox",) or f["required"]]
     if len(real) >= 2 or any(f["kind"] in ("textarea", "file", "select", "radio", "combo") for f in fields):
         return "form"

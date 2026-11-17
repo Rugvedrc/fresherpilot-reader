@@ -126,7 +126,7 @@ JS = r"""
     const t = (el.getAttribute('aria-label') || txt(el) || el.value || el.title || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     if (!t) return;
     const isLink = el.tagName === 'A';
-    if (isLink && !/\b(apply|continue|next|submit|sign ?in|log ?in|create|register|sign ?up|start|proceed|review|manually|resume|upload|verify|finish|send)\b/i.test(t)) return;
+    if (isLink && !/\b(apply|continue|next|submit|sign ?in|log ?in|create|register|sign ?up|start|proceed|review|manually|resume|upload|verify|finish|send|privacy|terms|statement|agreement|policy|conditions|accept)\b/i.test(t)) return;
     buttons.push({ id: stamp(el), frame: frameNo, text: t, disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'), link: isLink, href: isLink ? (el.href || '') : '',
                    primary: /primary|submit|next|continue|apply/i.test((el.className && el.className.toString()) + ' ' + (el.getAttribute('data-automation-id') || '')) });
   });
