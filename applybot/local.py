@@ -28,7 +28,7 @@ PORTALS = ["https://www.linkedin.com/login", "https://www.naukri.com/nlogin/logi
 def load_env(root: Path) -> None:
     from dotenv import dotenv_values
     for k, v in dotenv_values(root / ".env").items():
-        if v and k in ("FP_CLOUD_URL", "FP_CLOUD_SECRET", "APPLY_PW_SECRET", "GMAIL_APP_PASSWORD"):
+        if v and k in ("FP_CLOUD_URL", "FP_CLOUD_SECRET", "APPLY_PW_SECRET", "GMAIL_APP_PASSWORD", "GOOGLE_PASSWORD"):
             os.environ.setdefault(k, v)
 
 
@@ -64,7 +64,7 @@ def main() -> int:
         subprocess.run([chrome, f"--user-data-dir={prof_dir}", "--no-first-run", "--no-default-browser-check", *PORTALS])
         return 0
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(prof_dir, channel="chrome", headless=False, viewport=None, args=["--start-maximized", "--disable-blink-features=AutomationControlled"], ignore_default_args=["--enable-automation"],
+        ctx = p.chromium.launch_persistent_context(prof_dir, channel="chrome", headless=(os.environ.get("APPLYBOT_HEADLESS", "1") == "1"), viewport=None, args=["--start-maximized", "--disable-blink-features=AutomationControlled"], ignore_default_args=["--enable-automation"],
                                                    locale="en-IN", timezone_id="Asia/Kolkata")
         if a.login:
             for u in PORTALS:
@@ -79,6 +79,11 @@ def main() -> int:
             return 0
         import random
         done_today: dict[str, int] = {}
+        kept_tabs: list = []                 # CAPTCHA-blocked applications left open for the owner
+        handoff: list[str] = []              # Easy Apply jobs for the extension system (the owner's normal Chrome)
+        last_handoff = 0.0
+        blocked_run: dict[str, int] = {}     # consecutive CAPTCHA blocks per portal
+        paused_until: dict[str, float] = {}  # portal -> time it may be tried again
         day = time.strftime("%Y-%m-%d")
         resume_path = ""
         from applybot import mailwatch
@@ -93,9 +98,19 @@ def main() -> int:
         print("local apply runner: waiting for jobs (Ctrl+C to stop)", flush=True)
         while True:
             try:
+                if handoff and time.time() - last_handoff > 45:   # the app (old system) applies to these through the extension in the normal Chrome
+                    last_handoff = time.time()
+                    try:
+                        import requests as _rq
+                        r = _rq.post("http://localhost:8000/api/autoapply", json={"pick": [u for u in handoff if u], "max": len(handoff)}, timeout=20)
+                        print(f"handoff of {len(handoff)} job(s) to the extension system: HTTP {r.status_code}", flush=True)
+                        if r.status_code == 200:
+                            handoff.clear()
+                    except Exception as e:  # noqa: BLE001
+                        print("handoff failed (app not running?):", str(e)[:80], flush=True)
                 if time.strftime("%Y-%m-%d") != day:
                     day, done_today = time.strftime("%Y-%m-%d"), {}
-                capped = ",".join(k for k in DAILY_CAP if done_today.get(k, 0) >= DAILY_CAP[k])   # cap 0 (LinkedIn) = never claimed
+                capped = ",".join(k for k in DAILY_CAP if done_today.get(k, 0) >= DAILY_CAP[k] or paused_until.get(k, 0) > time.time())   # cap 0 (LinkedIn) = never claimed
                 claim = cloud._call("GET", "/api/apply/claim?scope=local" + (f"&skip={capped}" if capped else ""))
             except Exception as e:  # noqa: BLE001
                 print("cloud not reachable:", str(e)[:80])
@@ -109,6 +124,15 @@ def main() -> int:
                 continue
             if str(job.get("source", "")).lower() == "linkedin" or "linkedin.com" in str(job.get("url", "")):
                 cloud.result(job["id"], "skipped", "LinkedIn jobs are never auto-applied (protects your account): apply by hand", "")
+                continue
+            from urllib.parse import urlparse as _up
+            from applybot.engine import PORTAL as _PORTAL
+            if _PORTAL.search((_up(job.get("url", "")).hostname or "").removeprefix("www.")):
+                # a job-portal link (Indeed / Naukri / Internshala / Wellfound): the old extension system does these in the owner's own Chrome.
+                # (A separate automation browser is challenged by those portals right away.) Playwright only takes company career-site links.
+                handoff.append(job.get("uid") or "")
+                cloud.result(job["id"], "skipped", "Easy Apply: handed to the extension system in your normal Chrome", "")
+                print(f"job {job['id']}: portal link, handed to the extension system", flush=True)
                 continue
             profile = claim.get("profile")
             dry = a.dry or bool(cloud._call("GET", "/api/apply/dry").get("dry", True))
@@ -125,21 +149,48 @@ def main() -> int:
                 if not os.environ.get("GMAIL_USER"):
                     os.environ["GMAIL_USER"] = profile["personal"]["email"]
                 run = Run(ctx, job, profile, claim.get("accounts") or [], resume_path, dry)
+                status = "failed"
                 try:
                     status, detail = run.run()
                 finally:
                     steps = "\n".join(run.steps)
-                    for pg in list(ctx.pages)[1:]:   # leave one tab open, close the rest
+                    if status == "blocked" and os.environ.get("APPLYBOT_HEADLESS", "1") != "1" and len(kept_tabs) < 4:   # filled in and waiting for the owner's CAPTCHA tick + Submit: leave it open
+                        kept_tabs.append(run.page)
+                        detail = "Everything is filled in. In the auto-apply Chrome window, open the tab for this job, tick the CAPTCHA box and press Submit."
+                    for pg in list(ctx.pages)[1:]:   # leave one tab open (+ the kept ones), close the rest
+                        if any(pg is k for k in kept_tabs):
+                            continue
                         try:
                             pg.close()
                         except Exception:  # noqa: BLE001
                             pass
+                if status == "handoff":
+                    handoff.append(job.get("uid") or "")
+                    status, detail = "skipped", "Easy Apply: handed to the extension system in your normal Chrome"
                 print(f"   -> {status}: {detail}", flush=True)
                 cloud.result(job["id"], status, detail, steps)
                 if status == "applied":
                     done_today[job["source"]] = done_today.get(job["source"], 0) + 1
+                    blocked_run[job["source"]] = 0
+                elif status == "blocked":
+                    blocked_run[job["source"]] = blocked_run.get(job["source"], 0) + 1
+                    if False:   # (pausing replaced by leaving the filled application open)
+                        paused_until[job["source"]] = time.time() + 6 * 3600
+                        blocked_run[job["source"]] = 0
+                        print(f"{job['source']}: CAPTCHA twice in a row, paused for 6 hours", flush=True)
+                        try:
+                            cloud._call("POST", "/api/apply/notify", json={"text": f"🛑 <b>{job['source']}</b> keeps showing a CAPTCHA to the auto-apply browser, so I paused it for 6 hours. Those jobs need you (tick the box) or the Easy Apply route."})
+                        except Exception:  # noqa: BLE001
+                            pass
                 time.sleep(random.uniform(*PAUSE))
             except Exception as e:  # noqa: BLE001
+                if "closed" in str(e).lower() or "Target page" in str(e):   # the Chrome window was closed: put the job back and stop (no error spam)
+                    try:
+                        cloud._call("POST", "/api/apply/requeue", json={"id": job["id"]})
+                    except Exception:  # noqa: BLE001
+                        pass
+                    print("Chrome window closed: stopping (jobs stay queued)", flush=True)
+                    return 2
                 traceback.print_exc()
                 try:
                     cloud.result(job["id"], "failed", f"Runner error: {str(e)[:200]}", steps)

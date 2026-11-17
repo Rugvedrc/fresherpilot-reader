@@ -111,7 +111,9 @@ class Run:
             key = kind + "|" + state_key(snap)
             same = same + 1 if key == last else 0
             last = key
-            self.log(f"{kind} @ {snap['host']} fields={len(snap['fields'])} buttons={len(snap['buttons'])}" + (f" errors={len(snap['errors'])}" if snap["errors"] else ""))
+            self.log(f"{kind} @ {snap['host']} fields={len(snap['fields'])} buttons={len(snap['buttons'])}" + (f" errors={len(snap['errors'])}" if snap["errors"] else "")
+                     + " | b: " + ", ".join(x["text"][:22] + ("(off)" if x["disabled"] else "") for x in snap["buttons"][:9])
+                     + (" | f: " + ", ".join(f"{x['kind']}:{x['label'][:24]}" for x in snap["fields"][:5]) if snap["fields"] else ""))
             if same >= 3:
                 return "needs_you", f"Stuck on a {kind} page (nothing changed after 3 tries)"
             try:
@@ -119,11 +121,31 @@ class Run:
             except Stuck as e:
                 return "needs_you", f"Stuck: {e}"
             if res:
-                return res
+                return self.verify(res)
         return "needs_you", "Too many steps, finish it by hand"
+
+    def verify(self, res: tuple[str, str]) -> tuple[str, str]:
+        """A job-portal 'applied' is only believed when the job page itself shows Applied afterwards (a wrong 'applied' would hide a real backlog job)."""
+        if res[0] != "applied" or not res[1].startswith("Submitted") or not PORTAL.search(re.sub(r"^https?://(www\.)?", "", self.job["url"]).split("/")[0]):
+            return res
+        try:
+            vp = self.ctx.new_page()
+            vp.goto(self.job["url"], wait_until="domcontentloaded", timeout=40000)
+            vp.wait_for_timeout(3500)
+            sn = snapshot(vp)
+            ok = classify(sn) == "already_applied"
+            vp.close()
+        except Exception:  # noqa: BLE001
+            ok = False
+        if ok:
+            return "applied", "Submitted and confirmed (the job page shows Applied)"
+        return "needs_you", "Pressed submit, but the job page does not show Applied: check it by hand"
 
     def handle(self, kind: str, snap: dict, same: int) -> tuple[str, str] | None:
         if kind == "submitted":
+            from .classify import SUBMITTED
+            m = SUBMITTED.search(snap["text"])
+            self.log(f"submitted? url={snap['url'].split('?')[0][-70:]} matched='{(snap['text'][max(0, m.start() - 30):m.end() + 30] if m else '')[:110]}' headings={snap['headings'][:2]}")
             return "applied", "Submitted (the page confirms it)"
         if kind == "already_applied":
             return "applied", "Already applied earlier"
@@ -166,12 +188,14 @@ class Run:
         act.click(self.page, locate(snap, b["id"]))
 
     # ------------------------------------------------------------------ job page -> application
+    EXTERNAL = re.compile(r"(company|employer|external|careers?)\b.*(site|website|page)|apply (externally|on website)|apply on .*(site|website)", re.I)
+
     def do_job_detail(self, snap: dict) -> tuple[str, str] | None:
         cands = [b for b in snap["buttons"] if APPLY_WORDS.match(b["text"]) and not b["disabled"] and not SOCIAL.search(b["text"])]
         if not cands:
             cands = [b for b in snap["buttons"] if re.search(r"\bapply\b", b["text"], re.I) and not b["disabled"] and not AVOID.match(b["text"])]
         if not cands:
-            return "needs_you", "No Apply button found on the job page"
+            return "needs_you", "No Apply button found on the job page; buttons: " + ", ".join(x["text"][:20] for x in snap["buttons"][:8])
         order = ["apply manually", "apply now", "apply", "start", "i'm interested", "apply for this job", "apply online"]
         prev = getattr(self, "_prev_buttons", set())
         # a dropdown that just opened shows NEW buttons (Wipro: "Apply now" -> menu item "Apply Now"): take those first
@@ -179,6 +203,8 @@ class Run:
                                   next((i for i, o in enumerate(order) if b["text"].lower().startswith(o)), 99)))
         self._prev_buttons = {(x["link"], x["text"].lower(), x.get("href", "")) for x in snap["buttons"]}
         b = cands[0]
+        if PORTAL.search(snap["host"]) and not self.EXTERNAL.search(b["text"]) and not getattr(self, "_left_portal", False):
+            return "handoff", f"'{b['text']}' is the portal's own Easy Apply: handed to the extension system in your normal Chrome"
         if self.dry and re.match(r"^(submit|send|finish|complete|confirm)", b["text"], re.I):
             return "needs_you", "DRY RUN: stopped before the final Submit"
         self.press(snap, b)
@@ -186,7 +212,8 @@ class Run:
 
     # ------------------------------------------------------------------ accounts
     def email_pw(self, host: str) -> tuple[str, str]:
-        return self.email, cloud.password_for(host)
+        pws = cloud.passwords_for(host)
+        return self.email, pws[min(getattr(self, "pw_idx", {}).get(host, 0), len(pws) - 1)]
 
     def _fill_by_kind(self, snap: dict, mapping: list[tuple[Any, str]]) -> None:
         for f, v in mapping:
@@ -231,7 +258,13 @@ class Run:
             self.log("no account here yet: opening 'create account'")
             act.click(self.page, locate(snap, make["id"]))
             return None
-        # signed in once already on this page with the same inputs and still here: wrong password / no account
+        # signed in once already on this page with the same inputs and still here: try the other password, then the create-account link
+        if not hasattr(self, "pw_idx"):
+            self.pw_idx = {}
+        if host in self.tried_signin and self.pw_idx.get(host, 0) == 0 and len(cloud.passwords_for(host)) > 1:
+            self.pw_idx[host] = 1
+            self.tried_signin.discard(host)
+            email, pw = self.email_pw(host)
         if host in self.tried_signin:
             if make and host not in self.clicked_create:
                 self.clicked_create.add(host)
@@ -300,8 +333,9 @@ class Run:
             a = ans.get(f["id"])
             if a and a["value"]:
                 act.apply_answer(self.page, snap, f, a)
-        for f in others:   # required consent boxes on a sign-up form are part of creating the account
-            if f["kind"] == "checkbox" and not f.get("checked") and f["required"]:
+        from .answers import CONSENT, MARKETING
+        for f in others:   # consent boxes on a sign-up form ("Yes I Consent", "I agree...") are part of creating the account
+            if f["kind"] == "checkbox" and not f.get("checked") and (f["required"] or CONSENT.search(f["label"])) and not MARKETING.search(f["label"]):
                 act.set_checkbox(self.page, locate(snap, f["id"]), True)
         self.untick_marketing(snap)
         if (any(re.search(r"privacy|terms|agreement|statement|accept", e, re.I) for e in snap["errors"]) or True) and self.accept_documents(snap):

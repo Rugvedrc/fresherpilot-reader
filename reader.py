@@ -333,6 +333,7 @@ def read_indeed(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
                              "work_type": text(row.get("job_type")),
                              # a company link = apply on the company's site; none = Indeed Apply (mobile app)
                              "apply_mode": "site" if text(row.get("job_url_direct")).strip() else "easy",
+                             "blog_url": text(row.get("job_url_direct")).strip(),   # the company's own apply page: the auto-apply runner opens it directly
                              "posted_within_min": round(hours * 60) if hours <= 6 else None}
             time.sleep(1.0)
     items = list(jobs.values())

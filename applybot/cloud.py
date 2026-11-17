@@ -75,6 +75,16 @@ def ai(system: str, user: str, schema: dict) -> list | None:
     return d.get("r")
 
 
+def passwords_for(host: str) -> list[str]:
+    """Passwords to try on a portal: the owner's own (GOOGLE_PASSWORD in .env, read by the local runner) first, then the one derived per portal."""
+    out = []
+    own = os.environ.get("GOOGLE_PASSWORD", "")
+    if own:
+        out.append(own)
+    out.append(password_for(host))
+    return out
+
+
 def password_for(domain: str) -> str:
     """One password per portal, derived from a secret that only the owner has: nothing to store, and the owner can recompute it
     (scripts/portal_password.py) to log in by hand or to reset it."""

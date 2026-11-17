@@ -247,7 +247,15 @@ _r(r"portfolio|personal (web)?site|^website|\bblog\b|other (url|link|website)|^u
 _r(r"leet ?code|hacker ?rank|code ?forces|code ?chef", _p("links", "leetcode"))
 _r(r"date of birth|\bdob\b|birth ?date|born on|d\.o\.b", _date)
 _r(r"^age\b|your age|age in years|how old are you", _age)
-_r(r"^(gender|sex)\b|gender identity|^what is your gender|^your gender", _p("diversity", "gender"))
+_r(r"^(gender|sex)\b|gender identity|^what is your gender|^your gender|identify (my|your|as).{0,12}gender|gender (you )?identify|\bgender\b.{0,25}(identify|as)|i am (a )?(male|female)", _p("diversity", "gender"))
+_r(r"disabilit|differently.?abled|\bpwd\b|handicap|impairment", _p("diversity", "disability"))
+_r(r"veteran|armed forces|military (service|status)|ex.?servicem|protected veteran", _p("diversity", "veteran"))
+_r(r"hispanic|latin[oa]", _p("diversity", "hispanic_latino"))
+_r(r"\brace\b|ethnicit|identify.{0,20}(race|ethnic)", _p("diversity", "race_ethnicity"))
+_r(r"\bcaste\b|reservation category|^category$|social category|community category", _p("diversity", "caste_category"))
+_r(r"(sexual orientation|lgbt|transgender|pronoun)", _const("Prefer not to say"))
+_r(r"religion|religious", _const("Prefer not to say"))
+
 _r(r"(are you|do you) (at least|over|above|older than) (18|eighteen)|18 years (of age )?or older|legal (working )?age|minimum age", _const("Yes"))
 _r(r"^nationality|^citizenship$|country of citizenship|citizen of which|^citizen$|which country are you a citizen|^country of (nationality|origin)", _p("personal", "nationality", default="India"))
 _r(r"^place of birth|^birth ?place|^city of birth", _p("personal", "city"))
@@ -291,6 +299,9 @@ _r(r"(any )?(previous|prior|past) (work )?experience$|do you have (any )?(prior 
 _r(r"(previously|ever|formerly) (been )?(employed|worked|work) (by|at|with|for)|(former|ex)[- ]?(employee|intern)|ever been (an )?(employee|employed)|worked (for|at|with) .{0,40} before|currently work(ing)? (for|at)",
    _const("No"))
 _r(r"(relative|relatives|family member|friend|referral|referred by|know anyone|acquaintance).{0,60}(work|employ|here|company)|employee referral|referred by (an )?employee|do you have a referral", _const("No"))
+_r(r"(owner|investor|shareholder|director|officer|partner|advisor|employee).{0,80}(affiliat|related|connected|associated)|(affiliat|related|connected|associated).{0,80}(owner|investor|shareholder|director|officer)|conflict of interest|"
+   r"government (official|employee)|public official|politically exposed|(relative|spouse|family member|relation).{0,60}(employ|work|director|officer)|(currently )?bound by .{0,40}(non[- ]?compet|non[- ]?solicit|agreement|contract)|"
+   r"restrictive covenant|non[- ]?solicit|non[- ]?disclosure agreement.{0,40}(current|previous) employer|any (legal|contractual) (restriction|obligation)|criminal|convicted|debarred|blacklisted|terminated from|dismissed|asked to resign", _const("No"))
 _r(r"(non[- ]?compete|notice served|serving notice|bond|service agreement|contractual obligation)", _const("No"))
 _r(r"how did you (hear|come to know|find|learn|get to know)|source of (application|hire|referral|information)|where did you (hear|find|see|learn)|^source$|hear about (us|this|the)|referral source|job source",
    _p("custom_answers", "How did you hear about us?", default="Job portal"))
@@ -325,7 +336,7 @@ def bank_answer(field: dict[str, Any], profile: dict[str, Any]) -> tuple[str, bo
     if ftype in ("checkbox", "file"):
         return None
     label = _n(field.get("label") or "")
-    if not label or len(label) > 220:
+    if not label or len(label) > 420:
         return None
     # an essay box is a real question for the AI, except short identity labels
     if ftype == "textarea" and len(label.split()) > 4:

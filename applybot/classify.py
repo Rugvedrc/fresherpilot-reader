@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 SUBMITTED = re.compile(r"(application (has been |was |is )?(successfully )?(submitted|received|sent)|application sent|applied successfully|successfully applied to|thank you for (applying|your application|submitting)|successfully (applied|submitted)|"
-                       r"we('| ha)ve received your application|you('ve| have) (successfully )?applied|your application (is|has been) (complete|submitted|received)|application complete)", re.I)
+                       r"we('| ha)ve received your application|you('ve| have) (successfully )?applied (to|for) (this|the) (job|position|role)|you('ve| have) (successfully )?applied[.!]|your application (is|has been) (complete|submitted|received)|application complete)", re.I)
 CLOSED = re.compile(r"(no longer (accepting|available|open)|position (has been |is )?(filled|closed)|job (is |has been )?(closed|expired|removed|no longer)|"
                     r"(this )?(job|position|requisition|posting) (is )?(no longer|not) (available|active|open)|has (been )?expired|applications? (are |is )?closed|"
                     r"not currently accepting|page (you are looking for )?(cannot|can't|could not) be found|404|job not found|vacancy (is )?closed)", re.I)
@@ -16,7 +16,7 @@ VERIFY_EMAIL = re.compile(r"(verify your email|check your (e-?mail|inbox)|we('| 
                           r"click (on )?the link (in|we)|email (has been|was) sent|verification (e-?mail|link) (has been |was )?sent)", re.I)
 APPLY_WORDS = re.compile(r"^(apply( now| here| for this job| for job| to this job| online| externally)?|apply manually|start (your )?application|i'?m interested|apply (on|at|via|through) (the )?(company|employer)( (career|careers))?( site| website| page)?|apply (externally|on website)|"
                          r"easy apply|submit (your )?application|begin application|apply with (linkedin|resume)|use my last application|quick apply|apply for this position)$", re.I)
-FINAL = re.compile(r"^(submit( application| my application)?|send application|finish( application)?|apply|apply now|complete application|confirm( and submit)?|review and submit|submit & apply|agree and submit)$", re.I)
+FINAL = re.compile(r"^(submit( your| my| the)?( application)?|send application|finish( application)?|apply|apply now|complete application|confirm( and submit)?|review and submit|submit & apply|agree and submit)$", re.I)
 NEXT = re.compile(r"^(save (and|&) continue|next|continue|proceed|save and next|next step|go to next|continue to .+|save & next|save|review|next page|continue application)$", re.I)
 SIGNIN_BTN = re.compile(r"^(sign ?in|log ?in|login|submit)$", re.I)
 CREATE_BTN = re.compile(r"(create (an )?account|register|sign ?up|join now|get started)", re.I)
@@ -29,12 +29,18 @@ def classify(s: dict) -> str:
     pw = [f for f in fields if f["kind"] == "password"]
     fillable = [f for f in fields if f["kind"] not in ("file",)]
 
+    if any(re.search(r"not a robot|captcha|are you human|verify you are human|i am human", f"{f['label']} {f['name']}", re.I) for f in fields):
+        return "captcha"   # a visible "I'm not a robot" box (Indeed's final page, many forms): only the owner can tick it
     if s.get("captcha") and len(fillable) <= 4 and not any(f["kind"] == "textarea" for f in fillable):
         if BLOCKED.search(text) or len(text) < 400:
             return "captcha"
     if BLOCKED.search(text[:600]) and len(fillable) == 0:
         return "blocked"
-    if SUBMITTED.search(text) and not any(b["text"].lower() in ("submit", "submit application") for b in s["buttons"] if not b["disabled"]):
+    # "submitted" only when nothing is left to press: a review page that merely mentions submitting must not count
+    forward = [b for b in s["buttons"] if not b["disabled"] and (FINAL.match(b["text"]) or NEXT.match(b["text"]) or re.match(r"^(submit|continue|next|review)\b", b["text"], re.I))]
+    done_url = bool(re.search(r"(post-?apply|confirm|thank|success|submitted|applied)", s.get("url", ""), re.I))
+    reviewing = any(re.match(r"^review\b", h.strip(), re.I) for h in s["headings"]) or "review" in s.get("url", "").lower()
+    if SUBMITTED.search(text) and not forward and not reviewing and (done_url or not [f for f in fields if f["kind"] != "checkbox"]):
         return "submitted"
     if ALREADY.search(text) or any(re.match(r"^(\W*)(applied|already applied|application submitted)(\W*)$", b["text"], re.I) for b in s["buttons"]):
         return "already_applied"   # Indeed / Naukri show a greyed "Applied" button
