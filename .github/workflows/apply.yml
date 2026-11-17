@@ -1,0 +1,26 @@
+name: apply
+# Auto-apply runner: started by the cloud Worker when jobs wait in its apply queue (workflow_dispatch), works until the queue is empty.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = fill everything but never press the final Submit"
+        default: "0"
+concurrency:
+  group: apply
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install playwright requests && playwright install --with-deps chromium
+      - run: python -m applybot.main
+        env:
+          FP_CLOUD_URL: ${{ secrets.FP_CLOUD_URL }}
+          FP_CLOUD_SECRET: ${{ secrets.FP_CLOUD_SECRET }}
+          APPLY_PW_SECRET: ${{ secrets.APPLY_PW_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run }}
