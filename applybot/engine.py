@@ -454,7 +454,8 @@ class Run:
         if same == 0:   # slow page: wait and look again
             self.page.wait_for_timeout(4000)
             return None
-        return "needs_you", f"Unfamiliar page ({snap['title'][:60]})"
+        self.log("buttons: " + " | ".join(b["text"][:25] for b in snap["buttons"][:12]))
+        return "needs_you", f"Unfamiliar page ({snap['title'][:60]}); buttons: " + ", ".join(b["text"][:20] for b in snap["buttons"][:8])
 
     def _press(self, snap: dict, rx: re.Pattern) -> tuple[str, str] | None:
         btn = None

@@ -73,6 +73,10 @@ def classify(s: dict) -> str:
     real = [f for f in fillable if f["kind"] not in ("checkbox",) or f["required"]]
     if len(real) >= 2 or any(f["kind"] in ("textarea", "file", "select", "radio", "combo") for f in fields):
         return "form"
+    if re.search(r"(^|\.)(linkedin|naukri|indeed|internshala|wellfound|foundit)\.", s["host"] if "host" in s else "") and \
+            any(re.match(r"^(sign ?in|log ?in|login|join now|sign in with email|continue with email)$", x["text"], re.I) for x in s["buttons"]) and \
+            not any(APPLY_WORDS.match(x["text"]) for x in s["buttons"]):
+        return "signin"   # a job portal page that only offers Sign in / Join now: the Chrome profile is logged out
     if any(APPLY_WORDS.match(b["text"]) for b in s["buttons"]):
         return "job_detail"
     if fields:
