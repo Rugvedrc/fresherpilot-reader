@@ -40,6 +40,7 @@ DEADLINE = START + RUN_TOTAL
 # The workflow runs 3 machines at once (separate IPs, so LinkedIn's per-IP limit isn't shared): "li0" and "li1"
 # read half of the LinkedIn searches each (a round ~1 min), "indeed" loops Indeed. "all" = everything (one machine).
 SHARD = os.getenv("FP_SHARD", "all")
+LI_SHARDS = ("li0", "li1", "li2", "li3")   # the LinkedIn searches are split between these machines (read.yml matrix)
 
 
 class CloudDown(Exception):
@@ -118,7 +119,11 @@ def li_cards(html: str) -> list[dict]:
         company = card.select_one(".base-search-card__subtitle")
         loc = card.select_one(".job-search-card__location")
         posted = card.select_one("time")
-        out.append({"id": jid, "title": title.get_text(" ", strip=True),
+        age = None
+        m = re.match(r"\s*(\d+)\s+(minute|hour)", posted.get_text(" ", strip=True)) if posted else None   # "12 minutes ago" / "1 hour ago"
+        if m:
+            age = int(m.group(1)) * (60 if m.group(2) == "hour" else 1)
+        out.append({"id": jid, "age_min": age, "title": title.get_text(" ", strip=True),
                     "company": company.get_text(" ", strip=True) if company else "Unknown",
                     "location": loc.get_text(" ", strip=True) if loc else "",
                     "posted": posted.get("datetime", "") if posted else ""})
@@ -150,7 +155,7 @@ def li_detail(card: dict, within_min: int) -> dict:
                          else f"Remote, {card['location']}" if card["location"] else "Remote"),
             "experience": d["level"] or "Not specified", "posted": card["posted"],
             "posted_days": days_ago(posted_dt), "url": f"https://www.linkedin.com/jobs/view/{card['id']}/",
-            "description": d["description"], "work_type": d["type"], "posted_within_min": within_min,
+            "description": d["description"], "work_type": d["type"], "posted_within_min": (card["age_min"] + 1 if card.get("age_min") is not None and card["age_min"] < 180 else within_min),
             "apply_mode": d.get("apply", "")}
 
 
@@ -163,8 +168,8 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     pages = 3 if window <= 3600 else min(40, 3 + window // 3600)  # page 1 all new = read on (a hot search has >10 new in a window)  # longer gap: read deeper
     new_cards: dict[str, dict] = {}
     searches = cfg["li_searches"]
-    if SHARD in ("li0", "li1"):
-        searches = searches[int(SHARD[-1])::2]
+    if SHARD in LI_SHARDS:
+        searches = searches[int(SHARD[-1])::len(LI_SHARDS)]
     for title, place in searches:
         if time.time() > DEADLINE:
             return finish_li(new_cards, window), False
@@ -356,7 +361,7 @@ def blog_poker() -> None:
 
 def main() -> int:
     force = "?force=1" if os.getenv("FP_FORCE") == "1" else ""
-    do_li, do_indeed = SHARD in ("all", "li0", "li1"), SHARD in ("all", "indeed", "ic0", "ic1")
+    do_li, do_indeed = SHARD == "all" or SHARD in LI_SHARDS, SHARD in ("all", "indeed", "ic0", "ic1")
     if SHARD == "careers":
         import threading
         threading.Thread(target=blog_poker, daemon=True).start()
@@ -436,7 +441,7 @@ def main() -> int:
             line += f" Indeed sent {len(ind)} (new {res['added']})"
         rounds += 1
         print(f"{datetime.now(timezone.utc):%H:%M:%S} {line}, {time.time() - began:.0f}s", flush=True)
-        time.sleep(max(0.0, MIN_ROUND - (time.time() - began)))
+        time.sleep(max(0.0, (15 if SHARD in LI_SHARDS else MIN_ROUND) - (time.time() - began)))   # LinkedIn machines: the next round starts almost at once
     print(f"Done: {rounds} rounds in {(time.time() - START) / 60:.0f} min")
     return 0
 

@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [li0, li1]   # 2 machines at once: half the LinkedIn searches each (Indeed: indeed.yml; company searches + career sites: fast.yml)
+        shard: [li0, li1, li2, li3]   # 4 machines at once (separate IPs): a quarter of the LinkedIn searches each (Indeed: indeed.yml; company searches + career sites: fast.yml)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
