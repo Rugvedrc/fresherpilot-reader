@@ -92,6 +92,13 @@ class Blocked(Exception):
 _li_last = 0.0
 
 
+def tpr(window: int) -> str:
+    """f_TPR window with a few seconds of jitter. Every round used the SAME url (window = the 30 min minimum), so LinkedIn's cache could hand back
+    a page a few minutes old: measured Nov 21, jobs reached us 6-11 min after posting (median 7), a few at 2-3 min. A different url every call
+    cannot be served from that cache (and the extra seconds only widen the window)."""
+    return f"r{window + int(time.time() * 1000) % 120}"
+
+
 def li_get(url: str, params: dict | None = None) -> requests.Response | None:
     global _li_last
     for pause in (10, 30, 60):
@@ -173,7 +180,7 @@ def read_linkedin(cfg: dict, known: set[str]) -> tuple[list[dict], bool]:
     for title, place in searches:
         if time.time() > DEADLINE:
             return finish_li(new_cards, window), False
-        params = {"keywords": title, "location": "India" if place == "Remote" else place, "f_TPR": f"r{window}",
+        params = {"keywords": title, "location": "India" if place == "Remote" else place, "f_TPR": tpr(window),
                   "f_JT": "F", "sortBy": "DD"}
         if place == "Remote":
             params["f_WT"] = "2"
@@ -207,7 +214,7 @@ def read_linkedin_companies(cfg: dict, known: set[str]) -> tuple[list[dict], boo
     for name, cid in companies:
         if time.time() > DEADLINE or time.time() - began > 420:  # never hold up this machine's regular rounds for long
             return finish_li(new_cards, window), False  # not complete: the read time isn't advanced, known IDs are skipped next time
-        params = {"f_C": cid, "location": "India", "f_TPR": f"r{window}", "sortBy": "DD"}
+        params = {"f_C": cid, "location": "India", "f_TPR": tpr(window), "sortBy": "DD"}
         for page in range(int(pages)):
             r = li_get(LI_SEARCH, {**params, "start": page * 10})
             found = li_cards(r.text) if r is not None else []
