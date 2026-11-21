@@ -34,7 +34,7 @@ MAX_DETAILS = 80      # job pages per round (the rest: next round, the window is
 # cloud starts the next run (it waits in the queue meanwhile: workflow "concurrency"), so reading never stops.
 RUN_TOTAL = int(os.getenv("FP_RUN_MINUTES", "340")) * 60
 INDEED_EVERY = 10 * 60
-MIN_ROUND = 60        # seconds: a round faster than this waits (be polite)
+MIN_ROUND = 20        # seconds: a round faster than this waits (be polite)
 START = time.time()
 DEADLINE = START + RUN_TOTAL
 # The workflow runs 3 machines at once (separate IPs, so LinkedIn's per-IP limit isn't shared): "li0" and "li1"
